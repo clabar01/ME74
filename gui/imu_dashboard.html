@@ -1,0 +1,726 @@
+<!doctype html>
+<!--
+  IMU Dashboard for the ME74 ICM-20948 sketch (IMU_initialtest.ino)
+
+  How to use: open this file in Google Chrome or Microsoft Edge (Safari and
+  Firefox don't support USB serial), click Connect, and pick the XIAO board.
+  Close the PlatformIO/Arduino Serial Monitor first: only one program can use
+  the port at a time.
+
+  How it works:
+    - Sends 'l' to the board so it prints CSV lines: LOG,t_us,ax,ay,az,gx,gy,gz,
+      mx,my,mz,roll,pitch,heading,dt_ms,overruns  (50 per second)
+    - Calibrate button sends '0' (the sketch's recalibration command)
+    - Logging keeps rows in memory and downloads a CSV when you press Stop.
+      The CSV has the same columns as tools/imu_still_test.py, so
+      "python tools/imu_still_test.py stats <file>" works on it.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IMU Dashboard</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1b1f24; --muted: #667085;
+    --border: #e2e5ea; --grid: #eef0f3; --accent: #2563eb; --accent-text: #ffffff;
+    --ok: #15803d; --warn: #b45309; --danger: #dc2626;
+    --x: #e5484d; --y: #2f9e5f; --z: #3e63dd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #171a21; --text: #e6e8eb; --muted: #9aa4b2;
+      --border: #272c36; --grid: #20252e; --accent: #4f8cff; --accent-text: #0b0d12;
+      --ok: #3fb950; --warn: #e3a008; --danger: #f05252;
+      --x: #ff6b6b; --y: #4cc38a; --z: #7b93ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--card);
+    position: sticky; top: 0; z-index: 1;
+  }
+  h1 { font-size: 17px; margin: 0 8px 0 0; }
+  .pill {
+    font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid currentColor; color: var(--muted);
+  }
+  .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); }
+  .pill.danger { color: var(--danger); } .pill.accent { color: var(--accent); }
+  .spacer { flex: 1; }
+  button {
+    font: inherit; font-weight: 600; padding: 7px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.recording { background: var(--danger); color: #fff; border-color: var(--danger); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  main {
+    display: grid; gap: 14px; padding: 16px; max-width: 1300px; margin: 0 auto;
+    grid-template-columns: repeat(12, 1fr);
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px; min-width: 0;
+  }
+  .card h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); margin: 0 0 10px; font-weight: 600;
+  }
+  .angle { grid-column: span 4; display: flex; align-items: center; gap: 14px; }
+  .angle canvas { width: 92px; height: 92px; flex: none; }
+  .angle .value { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .angle .sub { color: var(--muted); font-size: 12px; }
+  .drift { grid-column: span 7; }
+  .stats { grid-column: span 5; }
+  .chart { grid-column: span 6; }
+  .chart canvas { width: 100%; height: 220px; display: block; }
+  .messages { grid-column: span 12; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .legend { display: flex; gap: 14px; font-size: 12px; margin-bottom: 6px; font-variant-numeric: tabular-nums; }
+  .legend span::before {
+    content: ""; display: inline-block; width: 10px; height: 3px; border-radius: 2px;
+    margin-right: 5px; vertical-align: middle; background: var(--c);
+  }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-variant-numeric: tabular-nums; }
+  .kv div:nth-child(odd) { color: var(--muted); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  #hint { display: none; color: var(--warn); font-weight: 600; margin-top: 8px; }
+  pre {
+    margin: 0; max-height: 150px; overflow: auto; font-size: 12px; color: var(--muted);
+    white-space: pre-wrap;
+  }
+  @media (max-width: 900px) {
+    .angle, .drift, .stats, .chart { grid-column: span 12; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>IMU Dashboard</h1>
+  <span id="status" class="pill">Disconnected</span>
+  <span id="logPill" class="pill danger" style="display:none">● REC</span>
+  <span class="spacer"></span>
+  <button id="btnConnect" class="primary">Connect</button>
+  <button id="btnDemo">Demo data</button>
+  <button id="btnCal" disabled title="Recalibrate gyro/accel bias. Keep the sensor still and level.">Calibrate</button>
+  <button id="btnResetDrift" disabled title="Measure drift from this moment">Reset drift</button>
+  <button id="btnLog" disabled>Start logging</button>
+</header>
+
+<main>
+  <section class="card angle">
+    <canvas id="dialRoll"></canvas>
+    <div><h2>Roll</h2><div class="value" id="vRoll">--</div><div class="sub">about X axis</div></div>
+  </section>
+  <section class="card angle">
+    <canvas id="dialPitch"></canvas>
+    <div><h2>Pitch</h2><div class="value" id="vPitch">--</div><div class="sub">about Y axis</div></div>
+  </section>
+  <section class="card angle">
+    <canvas id="dialYaw"></canvas>
+    <div><h2>Yaw (heading)</h2><div class="value" id="vYaw">--</div><div class="sub">clockwise from north</div></div>
+  </section>
+
+  <section class="card drift">
+    <h2>Drift since startup <span id="driftElapsed" style="text-transform:none;letter-spacing:0"></span></h2>
+    <table>
+      <thead><tr><th>Angle</th><th>At start</th><th>Now</th><th>Drift</th><th>Drift rate</th><th>Gyro-only drift</th></tr></thead>
+      <tbody>
+        <tr><td>Roll</td><td id="dRollS">--</td><td id="dRollN">--</td><td id="dRollD">--</td><td id="dRollR">--</td><td id="dRollG">--</td></tr>
+        <tr><td>Pitch</td><td id="dPitchS">--</td><td id="dPitchN">--</td><td id="dPitchD">--</td><td id="dPitchR">--</td><td id="dPitchG">--</td></tr>
+        <tr><td>Yaw</td><td id="dYawS">--</td><td id="dYawN">--</td><td id="dYawD">--</td><td id="dYawR">--</td><td id="dYawG">--</td></tr>
+      </tbody>
+    </table>
+    <div class="note">
+      "Start" and "Now" are 1-second averages. Drift resets after each calibration or when you press Reset drift.
+      Gyro-only drift is what you would get by just integrating the gyro (no sensor fusion), for comparison.
+    </div>
+  </section>
+
+  <section class="card stats">
+    <h2>Data</h2>
+    <div class="kv">
+      <div>Samples / s</div><div id="sRate">--</div>
+      <div>Loop dt (board)</div><div id="sDt">--</div>
+      <div>Loop overruns</div><div id="sOver">--</div>
+      <div>Magnetic field</div><div id="sMag">--</div>
+      <div>Logging</div><div id="sLog">off</div>
+    </div>
+    <div id="hint"></div>
+  </section>
+
+  <section class="card chart">
+    <h2>Accelerometer (m/s²)</h2>
+    <div class="legend" id="legAccel"></div>
+    <canvas id="chartAccel"></canvas>
+  </section>
+  <section class="card chart">
+    <h2>Gyroscope (deg/s)</h2>
+    <div class="legend" id="legGyro"></div>
+    <canvas id="chartGyro"></canvas>
+  </section>
+
+  <section class="card messages">
+    <h2>Messages from the board</h2>
+    <pre id="msgs"></pre>
+  </section>
+</main>
+
+<script>
+// ============================================================================
+// Settings
+// ============================================================================
+const WINDOW_S = 10;        // seconds of data shown in the graphs
+const AVG_N = 50;           // samples averaged for drift start/now values (1 s at 50 Hz)
+const DEG = 180 / Math.PI;
+// Same columns as tools/imu_still_test.py
+const CSV_COLUMNS = ["t_s", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
+                     "roll_deg", "pitch_deg", "heading_deg", "dt_ms", "overruns"];
+
+const $ = (id) => document.getElementById(id);
+
+// ============================================================================
+// State
+// ============================================================================
+let port = null, reader = null, writer = null, readableClosed = null;
+let connected = false;
+let demo = null;               // demo-mode generator, when active
+let samples = [];              // last WINDOW_S seconds, for the graphs
+let latest = null;             // newest sample
+let lastRawUs = null, wrapOffsetUs = 0;   // board micros() rolls over every ~71 min
+let lastDataAt = 0, connectedAt = 0;
+let rateTimes = [];            // arrival times, for samples/s
+let calibrating = false;
+let dirty = true;              // something changed, redraw
+
+// Drift tracking
+let refBuf = [], ref = null, recent = [], lastT = null;
+let gyroInt = { x: 0, y: 0, z: 0 };   // integrated gyro (rad) since drift reset
+
+// Logging
+let logging = false, logRows = [], logT0 = null;
+
+// ============================================================================
+// Helpers
+// ============================================================================
+const wrap180 = (a) => ((a + 180) % 360 + 360) % 360 - 180;
+const mean = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+// Average angles safely across the 359 -> 0 jump
+const meanAngle = (arr) => arr[0] + mean(arr.map((v) => wrap180(v - arr[0])));
+const fmtDeg = (v, d = 2) => (v >= 0 ? "+" : "") + v.toFixed(d) + "°";
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function addMessage(text) {
+  const box = $("msgs");
+  const time = new Date().toLocaleTimeString();
+  box.textContent += `[${time}] ${text}\n`;
+  const lines = box.textContent.split("\n");
+  if (lines.length > 200) box.textContent = lines.slice(-200).join("\n");
+  box.scrollTop = box.scrollHeight;
+}
+
+function resetDrift() {
+  refBuf = []; ref = null; recent = []; lastT = null;
+  gyroInt = { x: 0, y: 0, z: 0 };
+  dirty = true;
+}
+
+function resetAll() {
+  samples = []; latest = null; lastRawUs = null; wrapOffsetUs = 0;
+  rateTimes = []; resetDrift();
+}
+
+// ============================================================================
+// Handling lines from the board
+// ============================================================================
+let oldFirmwareWarned = false;
+
+function handleLine(line) {
+  if (line.startsWith("LOG,")) {
+    const s = parseLog(line);
+    if (s) handleSample(s);
+    return;
+  }
+  // Anything else is a status message from the sketch
+  addMessage(line);
+  if (line.includes("Calibrating")) { calibrating = true; updateStatus(); }
+  if (line.includes("Calibration done")) {
+    calibrating = false; resetDrift(); updateStatus();
+    send("l");   // make sure logging mode is on (e.g. after the board restarted)
+  }
+  if (line.startsWith("Accel X:") && !oldFirmwareWarned) {
+    oldFirmwareWarned = true;
+    addMessage(">> This looks like the OLD firmware. Flash the new one: pio run -e xiao_esp32s3 -t upload");
+  }
+}
+
+function parseLog(line) {
+  const p = line.split(",");
+  if (p.length !== 16) return null;          // incomplete line
+  const n = p.slice(1).map(Number);
+  if (n.some(Number.isNaN)) return null;
+
+  const us = n[0];
+  if (lastRawUs !== null && us < lastRawUs) {
+    if (lastRawUs > 2 ** 32 - 20e6 && us < 20e6) {
+      wrapOffsetUs += 2 ** 32;               // normal micros() rollover
+    } else {
+      addMessage("Board restarted.");
+      resetAll();
+    }
+  }
+  lastRawUs = us;
+
+  return {
+    t: (us + wrapOffsetUs) / 1e6,
+    ax: n[1], ay: n[2], az: n[3],
+    gx: n[4], gy: n[5], gz: n[6],
+    mx: n[7], my: n[8], mz: n[9],
+    roll: n[10], pitch: n[11], yaw: n[12],
+    dt: n[13], overruns: n[14],
+    raw: p.slice(2),                          // original text, for the CSV
+  };
+}
+
+function handleSample(s) {
+  // Graph buffer: keep only the last WINDOW_S seconds
+  samples.push(s);
+  while (samples.length && samples[0].t < s.t - WINDOW_S) samples.shift();
+
+  // Gyro-only integration (what raw integration would give)
+  if (lastT !== null) {
+    const dt = Math.min(s.t - lastT, 0.2);   // ignore long gaps (calibration pauses)
+    if (dt > 0) { gyroInt.x += s.gx * dt; gyroInt.y += s.gy * dt; gyroInt.z += s.gz * dt; }
+  }
+  lastT = s.t;
+
+  // Drift reference = average of the first second after reset
+  if (!ref) {
+    refBuf.push(s);
+    if (refBuf.length >= AVG_N) {
+      ref = {
+        t: refBuf[0].t,
+        roll: meanAngle(refBuf.map((r) => r.roll)),
+        pitch: meanAngle(refBuf.map((r) => r.pitch)),
+        yaw: meanAngle(refBuf.map((r) => r.yaw)),
+      };
+    }
+  }
+  recent.push(s);
+  if (recent.length > AVG_N) recent.shift();
+
+  if (logging) {
+    if (logT0 === null) logT0 = s.t;
+    logRows.push([(s.t - logT0).toFixed(4), ...s.raw].join(","));
+  }
+
+  latest = s;
+  lastDataAt = performance.now();
+  rateTimes.push(lastDataAt);
+  dirty = true;
+}
+
+// ============================================================================
+// Serial connection (Web Serial API)
+// ============================================================================
+async function connect() {
+  if (!("serial" in navigator)) {
+    alert("This browser can't talk to USB serial devices.\nPlease open this page in Google Chrome or Microsoft Edge.");
+    return;
+  }
+  try {
+    // Espressif (built-in USB) and Seeed USB vendor IDs
+    port = await navigator.serial.requestPort({
+      filters: [{ usbVendorId: 0x303a }, { usbVendorId: 0x2886 }],
+    });
+    await port.open({ baudRate: 115200 });
+  } catch (e) {
+    if (e.name !== "NotFoundError") {   // NotFoundError = user closed the picker
+      addMessage("Could not open the port: " + e.message +
+                 " (is the Serial Monitor or another program using it?)");
+    }
+    port = null;
+    return;
+  }
+  writer = port.writable.getWriter();
+  connected = true;
+  connectedAt = performance.now();
+  resetAll();
+  updateStatus();
+  addMessage("Connected. Switching the board to logging mode...");
+  readLoop();
+  setTimeout(() => send("l"), 300);
+}
+
+async function readLoop() {
+  const decoder = new TextDecoderStream();
+  readableClosed = port.readable.pipeTo(decoder.writable).catch(() => {});
+  reader = decoder.readable.getReader();
+  let buffer = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      let i;
+      while ((i = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, i).trim();
+        buffer = buffer.slice(i + 1);
+        if (line) handleLine(line);
+      }
+    }
+  } catch (e) {
+    addMessage("Connection lost: " + e.message);
+  } finally {
+    reader.releaseLock();
+  }
+  if (connected) disconnect();   // the board was unplugged
+}
+
+async function disconnect() {
+  if (!connected) return;
+  connected = false;
+  if (logging) stopLogging();    // don't lose recorded data
+  if (demo) {
+    clearInterval(demo.timer); demo = null;
+  } else {
+    try { await send("p"); } catch (e) {}   // back to normal printout for the Serial Monitor
+    try { await reader.cancel(); } catch (e) {}
+    try { await readableClosed; } catch (e) {}
+    try { writer.releaseLock(); } catch (e) {}
+    try { await port.close(); } catch (e) {}
+    port = null;
+  }
+  calibrating = false;
+  addMessage("Disconnected.");
+  updateStatus();
+}
+
+async function send(ch) {
+  if (demo) { demoCommand(ch); return; }
+  if (!connected || !writer) return;
+  await writer.write(new TextEncoder().encode(ch));
+}
+
+// If no data is arriving (board was busy or restarted), ask for logging mode again
+setInterval(() => {
+  if (connected && !demo && !calibrating && performance.now() - lastDataAt > 2500) send("l");
+}, 2000);
+
+// ============================================================================
+// Logging to CSV
+// ============================================================================
+function startLogging() {
+  logging = true; logRows = []; logT0 = null;
+  addMessage("Logging started.");
+  updateStatus();
+}
+
+function stopLogging() {
+  logging = false;
+  updateStatus();
+  if (!logRows.length) { addMessage("Logging stopped (no data recorded)."); return; }
+  const csv = CSV_COLUMNS.join(",") + "\n" + logRows.join("\n") + "\n";
+  const d = new Date();
+  const pad = (x) => String(x).padStart(2, "0");
+  const name = `imu_log_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
+               `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.csv`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  addMessage(`Saved ${logRows.length} rows to your Downloads folder as ${name}`);
+}
+
+window.addEventListener("beforeunload", (e) => {
+  if (logging) { e.preventDefault(); e.returnValue = ""; }
+});
+
+// ============================================================================
+// Demo mode: simulated board, so the page can be tried without hardware
+// ============================================================================
+function gauss() {
+  return Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
+}
+
+function startDemo() {
+  demo = { t: 0, pausedUntil: 0, timer: setInterval(demoTick, 20) };
+  connected = true;
+  connectedAt = performance.now();
+  resetAll();
+  updateStatus();
+  addMessage("Demo mode: simulated data, no board connected.");
+}
+
+function demoTick() {
+  if (performance.now() < demo.pausedUntil) return;   // "calibrating"
+  demo.t += 0.02;
+  const t = demo.t;
+  const roll = 1.5 + 0.8 * Math.sin(t * 0.4) + 0.03 * gauss();
+  const pitch = -2.0 + 0.6 * Math.sin(t * 0.25) + 0.03 * gauss();
+  const yaw = (((137 + 4 * Math.sin(t * 0.1) + 0.15 * gauss()) % 360) + 360) % 360;
+  const r = roll / DEG, p = pitch / DEG, g = 9.80665;
+  const ax = -g * Math.sin(p) + 0.02 * gauss();
+  const ay = g * Math.sin(r) * Math.cos(p) + 0.02 * gauss();
+  const az = g * Math.cos(r) * Math.cos(p) + 0.02 * gauss();
+  const gx = 0.8 * 0.4 * Math.cos(t * 0.4) / DEG + 0.002 * gauss() + 0.0003;
+  const gy = 0.6 * 0.25 * Math.cos(t * 0.25) / DEG + 0.002 * gauss();
+  const gz = -0.4 * Math.cos(t * 0.1) / DEG + 0.002 * gauss() - 0.0002;
+  const us = Math.round(t * 1e6) + 5000000;
+  const f = (v, d) => v.toFixed(d);
+  handleLine(`LOG,${us},${f(ax, 4)},${f(ay, 4)},${f(az, 4)},${f(gx, 5)},${f(gy, 5)},${f(gz, 5)},` +
+             `${f(18 + 0.5 * gauss(), 2)},${f(-6 + 0.5 * gauss(), 2)},${f(-44 + 0.5 * gauss(), 2)},` +
+             `${f(roll, 3)},${f(pitch, 3)},${f(yaw, 3)},${f(10 + 0.01 * gauss(), 3)},0`);
+}
+
+function demoCommand(ch) {
+  if (ch === "0") {
+    handleLine("Calibrating... keep the sensor still.");
+    demo.pausedUntil = performance.now() + 3000;
+    setTimeout(() => demo && handleLine("Calibration done."), 3000);
+  }
+}
+
+// ============================================================================
+// Drawing
+// ============================================================================
+function fitCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function niceStep(x) {
+  const p = 10 ** Math.floor(Math.log10(x));
+  const m = x / p;
+  return (m < 1.5 ? 1 : m < 3 ? 2 : m < 7 ? 5 : 10) * p;
+}
+
+// Line chart of the x/y/z keys over the last WINDOW_S seconds
+function drawChart(canvas, keys, scale, minSpan) {
+  const { ctx, w, h } = fitCanvas(canvas);
+  const padL = 46, padR = 8, padT = 6, padB = 20;
+  const pw = w - padL - padR, ph = h - padT - padB;
+  ctx.font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  ctx.fillStyle = css("--muted");
+
+  if (samples.length < 2) {
+    ctx.textAlign = "center";
+    ctx.fillText(connected ? "Waiting for data..." : "Not connected", w / 2, h / 2);
+    return;
+  }
+
+  // Auto-scale the y axis to the visible data
+  let lo = Infinity, hi = -Infinity;
+  for (const s of samples) for (const k of keys) {
+    const v = s[k] * scale;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  const mid = (lo + hi) / 2;
+  const span = Math.max(hi - lo, minSpan) * 1.15;
+  lo = mid - span / 2; hi = mid + span / 2;
+
+  const tEnd = samples[samples.length - 1].t, tStart = tEnd - WINDOW_S;
+  const X = (t) => padL + ((t - tStart) / WINDOW_S) * pw;
+  const Y = (v) => padT + ((hi - v) / (hi - lo)) * ph;
+
+  // Grid and labels
+  ctx.strokeStyle = css("--grid");
+  ctx.lineWidth = 1;
+  const step = niceStep((hi - lo) / 4);
+  const decimals = Math.max(0, -Math.floor(Math.log10(step)));
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+    const y = Math.round(Y(v)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.fillText(v.toFixed(decimals), padL - 6, y);
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (let s = 0; s <= WINDOW_S; s += 2) {
+    ctx.textAlign = s === 0 ? "right" : "center";   // keep "now" inside the chart
+    ctx.fillText(s === 0 ? "now" : `-${s} s`, X(tEnd - s) + (s === 0 ? 4 : 0), h - padB + 5);
+  }
+
+  // Data lines
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = "round";
+  for (const k of keys) {
+    ctx.strokeStyle = css("--" + k[1]);   // "ax" -> --x
+    ctx.beginPath();
+    samples.forEach((s, i) => {
+      const x = X(s.t), y = Y(s[k] * scale);
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+  }
+}
+
+// Round gauge. kind: "tilt" (bar that tilts with the angle) or "compass"
+function drawDial(canvas, deg, kind) {
+  const { ctx, w, h } = fitCanvas(canvas);
+  const cx = w / 2, cy = h / 2, r = Math.min(w, h) / 2 - 3;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = css("--border");
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke();
+  if (deg === null) return;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  if (kind === "tilt") {
+    // Dashed level reference
+    ctx.strokeStyle = css("--grid"); ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(-r + 6, 0); ctx.lineTo(r - 6, 0); ctx.stroke();
+    ctx.setLineDash([]);
+    // Bar rotated by the angle (counter-clockwise on screen = positive)
+    ctx.rotate(-deg / DEG);
+    ctx.strokeStyle = css("--accent"); ctx.lineWidth = 4; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(-r + 10, 0); ctx.lineTo(r - 10, 0); ctx.stroke();
+    ctx.fillStyle = css("--accent");
+    ctx.beginPath(); ctx.arc(0, 0, 4, 0, 2 * Math.PI); ctx.fill();
+  } else {
+    // Compass letters
+    ctx.fillStyle = css("--muted");
+    ctx.font = "600 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    [["N", 0], ["E", 90], ["S", 180], ["W", 270]].forEach(([l, a]) => {
+      ctx.fillText(l, Math.sin(a / DEG) * (r - 10), -Math.cos(a / DEG) * (r - 10));
+    });
+    // Needle rotated clockwise by the heading
+    ctx.rotate(deg / DEG);
+    ctx.fillStyle = css("--danger");
+    ctx.beginPath(); ctx.moveTo(0, -(r - 20)); ctx.lineTo(5, 0); ctx.lineTo(-5, 0); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = css("--muted");
+    ctx.beginPath(); ctx.moveTo(0, r - 20); ctx.lineTo(5, 0); ctx.lineTo(-5, 0); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function legend(el, s, keys, scale, decimals) {
+  el.innerHTML = keys.map((k) =>
+    `<span style="--c: var(--${k[1]})">${k[1].toUpperCase()} ${s ? (s[k] * scale).toFixed(decimals) : "--"}</span>`
+  ).join("");
+}
+
+// ============================================================================
+// Updating the page
+// ============================================================================
+function updateStatus() {
+  const st = $("status");
+  if (!connected) { st.textContent = "Disconnected"; st.className = "pill"; }
+  else if (calibrating) { st.textContent = "Calibrating: keep still"; st.className = "pill warn"; }
+  else if (demo) { st.textContent = "Demo data"; st.className = "pill accent"; }
+  else { st.textContent = "Connected"; st.className = "pill ok"; }
+
+  $("btnConnect").textContent = connected ? "Disconnect" : "Connect";
+  $("btnConnect").className = connected ? "" : "primary";
+  $("btnDemo").style.display = connected ? "none" : "";
+  $("btnCal").disabled = !connected || calibrating;
+  $("btnResetDrift").disabled = !connected;
+  $("btnLog").disabled = !connected;
+  $("btnLog").textContent = logging ? "Stop logging & save CSV" : "Start logging";
+  $("btnLog").className = logging ? "recording" : "";
+  $("logPill").style.display = logging ? "" : "none";
+}
+
+function updateNumbers() {
+  const s = latest;
+  $("vRoll").textContent = s ? fmtDeg(s.roll, 1) : "--";
+  $("vPitch").textContent = s ? fmtDeg(s.pitch, 1) : "--";
+  $("vYaw").textContent = s ? s.yaw.toFixed(1) + "°" : "--";
+
+  // Drift table
+  const rows = [["Roll", "roll", gyroInt.x * DEG], ["Pitch", "pitch", gyroInt.y * DEG],
+                ["Yaw", "yaw", -gyroInt.z * DEG]];   // heading is clockwise, gyro Z is counter-clockwise
+  const elapsed = ref && s ? s.t - ref.t : 0;
+  for (const [name, key, gyroOnly] of rows) {
+    if (!ref || recent.length < AVG_N) {
+      for (const c of "SNDRG") $(`d${name}${c}`).textContent = "--";
+      continue;
+    }
+    const now = meanAngle(recent.map((r) => r[key]));
+    const drift = wrap180(now - ref[key]);
+    $(`d${name}S`).textContent = ref[key].toFixed(2) + "°";
+    $(`d${name}N`).textContent = now.toFixed(2) + "°";
+    $(`d${name}D`).textContent = fmtDeg(drift);
+    $(`d${name}R`).textContent = elapsed > 10 ? fmtDeg((drift / elapsed) * 60) + "/min" : "--";
+    $(`d${name}G`).textContent = fmtDeg(gyroOnly);
+  }
+  $("driftElapsed").textContent = ref
+    ? `(${Math.floor(elapsed / 60)} min ${String(Math.floor(elapsed % 60)).padStart(2, "0")} s)`
+    : (connected ? "(measuring start values...)" : "");
+
+  // Data stats
+  const now = performance.now();
+  rateTimes = rateTimes.filter((t) => now - t < 1000);
+  $("sRate").textContent = connected ? rateTimes.length : "--";
+  $("sDt").textContent = s ? s.dt.toFixed(2) + " ms" : "--";
+  $("sOver").textContent = s ? s.overruns : "--";
+  $("sMag").textContent = s ? Math.hypot(s.mx, s.my, s.mz).toFixed(1) + " µT" : "--";
+  $("sLog").textContent = logging
+    ? `${logRows.length} rows (${(logRows.length / 50).toFixed(0)} s)` : "off";
+
+  legend($("legAccel"), s, ["ax", "ay", "az"], 1, 3);
+  legend($("legGyro"), s, ["gx", "gy", "gz"], DEG, 2);
+
+  // Help if nothing arrives
+  const hint = $("hint");
+  if (connected && !demo && !calibrating && now - lastDataAt > 6000 && now - connectedAt > 6000) {
+    hint.style.display = "block";
+    hint.textContent = "No IMU data yet. Check that the NEW firmware is flashed and that no other " +
+                       "program (e.g. the Serial Monitor) has the port open.";
+  } else {
+    hint.style.display = "none";
+  }
+}
+
+let lastNumbers = 0;
+function frame(t) {
+  if (dirty) {
+    drawChart($("chartAccel"), ["ax", "ay", "az"], 1, 0.5);
+    drawChart($("chartGyro"), ["gx", "gy", "gz"], DEG, 2);
+    drawDial($("dialRoll"), latest ? latest.roll : null, "tilt");
+    drawDial($("dialPitch"), latest ? latest.pitch : null, "tilt");
+    drawDial($("dialYaw"), latest ? latest.yaw : null, "compass");
+    dirty = false;
+  }
+  if (t - lastNumbers > 150) { updateNumbers(); lastNumbers = t; }   // ~7 updates/s: readable
+  requestAnimationFrame(frame);
+}
+
+// ============================================================================
+// Buttons
+// ============================================================================
+$("btnConnect").onclick = () => (connected ? disconnect() : connect());
+$("btnDemo").onclick = startDemo;
+$("btnCal").onclick = () => send("0");
+$("btnResetDrift").onclick = () => { resetDrift(); addMessage("Drift reset."); };
+$("btnLog").onclick = () => (logging ? stopLogging() : startLogging());
+window.addEventListener("resize", () => (dirty = true));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => (dirty = true));
+
+if (!("serial" in navigator)) {
+  addMessage("This browser doesn't support USB serial. Open this page in Google Chrome or Microsoft Edge. (Demo data still works.)");
+}
+updateStatus();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
