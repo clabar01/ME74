@@ -5,7 +5,7 @@ print mean, standard deviation and drift for every axis.
 
 Works with BOTH firmware versions:
   - old firmware (old_firmware/IMU_old.cpp): reads its "Accel X: ..." printout
-  - new firmware (IMU_initialtest.ino): switches it to logging mode ('l')
+  - new firmware (IMU_initialtest.cpp): switches it to logging mode ('l')
 
 Typical use (run from the ME74 folder; PlatformIO's Python already has pyserial):
 

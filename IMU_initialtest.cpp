@@ -20,6 +20,7 @@
 //   Roll  = rotation about X, Pitch = rotation about Y   (degrees)
 //   Heading = compass heading, 0-360 deg, clockwise from north (same as GPS course)
 
+#include <Arduino.h>          // needed in a .cpp file (Arduino adds it automatically to .ino files)
 #include <Adafruit_ICM20X.h>
 #include <Adafruit_ICM20948.h>
 #include <Adafruit_Sensor.h>
