@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPS Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --line: #2a2f3a;
+    --text: #e8eaf0;
+    --muted: #8b93a7;
+    --red: #e5484d;
+    --amber: #f5a524;
+    --green: #30a46c;
+    --blue: #4c8dff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 18px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 16px 24px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 22px; margin: 0; flex: 1; }
+  #portInfo { color: var(--muted); font-size: 15px; }
+  button, input {
+    font: inherit; color: var(--text); background: #232836;
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px;
+  }
+  button { cursor: pointer; font-weight: 600; }
+  button:hover:not(:disabled) { background: #2c3243; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  button.danger { border-color: var(--red); color: #ff8a8d; }
+  input[type=number] { width: 120px; }
+  main {
+    display: grid; gap: 16px; padding: 16px 24px;
+    grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; }
+  .panel h2 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .full { grid-column: 1 / -1; }
+
+  #banner {
+    grid-column: 1 / -1; border-radius: 12px; padding: 18px 24px;
+    font-size: 28px; font-weight: 700; background: #232836; color: var(--muted);
+  }
+  #banner.red { background: rgba(229,72,77,.18); color: #ff8a8d; border: 1px solid var(--red); }
+  #banner.amber { background: rgba(245,165,36,.16); color: #ffc65c; border: 1px solid var(--amber); }
+  #banner.green { background: rgba(48,164,108,.18); color: #5fd49a; border: 1px solid var(--green); }
+
+  #dist { font-size: 96px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  #dist small { font-size: 36px; color: var(--muted); font-weight: 600; }
+  #distNote { color: var(--muted); margin-top: 8px; }
+
+  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 24px; }
+  .stat .k { color: var(--muted); font-size: 14px; }
+  .stat .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  #plot { width: 100%; aspect-ratio: 1; display: block; background: #0b0d11; border-radius: 8px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .progress { height: 14px; background: #0b0d11; border-radius: 7px; overflow: hidden; margin-top: 14px; }
+  .progress > div { height: 100%; width: 0; background: var(--blue); transition: width .3s; }
+  #progressText { color: var(--muted); margin-top: 6px; min-height: 1.4em; }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-size: 14px; font-weight: 600; }
+  th:first-child, td:first-child { text-align: left; }
+  #emptyRow td { text-align: center; color: var(--muted); }
+
+  #log { height: 160px; overflow-y: auto; font: 14px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; }
+  label.toggle { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  label.toggle input { width: 20px; height: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GPS Dashboard</h1>
+  <span id="portInfo">Not connected</span>
+  <button id="connectBtn" class="primary">Connect</button>
+</header>
+
+<main>
+  <div id="banner">Not connected</div>
+
+  <section class="panel">
+    <h2>Distance from origin</h2>
+    <div id="dist">--<small> m</small></div>
+    <div id="distNote">No origin set</div>
+  </section>
+
+  <section class="panel">
+    <h2>Stats</h2>
+    <div class="stats">
+      <div class="stat"><div class="k">Latitude</div><div class="v" id="sLat">--</div></div>
+      <div class="stat"><div class="k">Longitude</div><div class="v" id="sLon">--</div></div>
+      <div class="stat"><div class="k">Satellites</div><div class="v" id="sSats">--</div></div>
+      <div class="stat"><div class="k">HDOP</div><div class="v" id="sHdop">--</div></div>
+      <div class="stat"><div class="k">Speed</div><div class="v" id="sSpeed">--</div></div>
+      <div class="stat"><div class="k">UTC</div><div class="v" id="sUtc">--</div></div>
+      <div class="stat"><div class="k">Jitter (max dist, last 30 s)</div><div class="v" id="sJitter">--</div></div>
+      <div class="stat"><div class="k">Bytes / parsed</div><div class="v" id="sCounts">--</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Position cloud (east / north, meters)</h2>
+    <canvas id="plot"></canvas>
+  </section>
+
+  <section class="panel">
+    <h2>Controls</h2>
+    <div class="controls">
+      <button id="originBtn" disabled>Set origin</button>
+      <button id="cancelBtn" class="danger" disabled>Cancel</button>
+    </div>
+    <div class="controls" style="margin-top:12px">
+      <label for="trueDist">Tape distance (m)</label>
+      <input id="trueDist" type="number" min="0" step="0.01" placeholder="e.g. 5.00">
+      <button id="measureBtn" disabled>Measure point</button>
+    </div>
+    <div class="progress"><div id="progressBar"></div></div>
+    <div id="progressText"></div>
+
+    <h2 style="margin-top:20px">Recording</h2>
+    <div class="controls">
+      <label class="toggle"><input type="checkbox" id="recordToggle"> Record raw log</label>
+      <span id="recordInfo" style="color:var(--muted)"></span>
+    </div>
+
+    <h2 style="margin-top:20px">Log</h2>
+    <div id="log"></div>
+  </section>
+
+  <section class="panel full">
+    <div class="controls" style="justify-content:space-between; margin-bottom:12px">
+      <h2 style="margin:0">Measured points</h2>
+      <button id="csvBtn" disabled>Download CSV</button>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>True (m)</th><th>GPS (m)</th><th>Error (m)</th><th>Samples</th><th>Time</th></tr></thead>
+      <tbody id="results"><tr id="emptyRow"><td colspan="6">No measurements yet</td></tr></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const JITTER_WINDOW_MS = 30000;
+const CLOUD_WINDOW_MS = 60000;
+const R_EARTH = 6371008.8;
+
+let port = null, reader = null, writer = null;
+let origin = null;          // {lat, lon}
+let history = [];           // {t, lat, lon, dist}
+let results = [];
+let recording = false, rawRows = [];
+let lastStatusAt = 0;
+
+// ---------- Serial ----------
+if (!('serial' in navigator)) {
+  $('banner').textContent = 'Web Serial not available. Use Chrome or Edge (see instructions).';
+  $('banner').className = 'red';
+  $('connectBtn').disabled = true;
+}
+
+$('connectBtn').onclick = async () => {
+  if (port) { await disconnect(); return; }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+  } catch (e) {
+    port = null;
+    log('Connect failed: ' + e.message);
+    return;
+  }
+  const info = port.getInfo();
+  $('portInfo').textContent = 'Connected' + (info.usbVendorId ? ` (USB ${info.usbVendorId.toString(16)}:${info.usbProductId.toString(16)})` : '');
+  $('connectBtn').textContent = 'Disconnect';
+  setBanner('Connected, waiting for data...', '');
+  setControls(true);
+  writer = port.writable.getWriter();
+  readLoop();
+};
+
+async function disconnect() {
+  try { if (reader) await reader.cancel(); } catch {}
+  try { if (writer) writer.releaseLock(); } catch {}
+  try { await port.close(); } catch {}
+  port = reader = writer = null;
+  $('portInfo').textContent = 'Not connected';
+  $('connectBtn').textContent = 'Connect';
+  setBanner('Not connected', '');
+  setControls(false);
+}
+
+navigator.serial?.addEventListener('disconnect', (e) => {
+  if (port && e.target === port) { log('Device unplugged.'); disconnect(); }
+});
+
+async function readLoop() {
+  const decoder = new TextDecoderStream();
+  port.readable.pipeTo(decoder.writable).catch(() => {});
+  reader = decoder.readable.getReader();
+  let buf = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line) handleLine(line);
+      }
+    }
+  } catch (e) {
+    log('Read error: ' + e.message);
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+}
+
+async function send(cmd) {
+  if (!writer) return;
+  await writer.write(new TextEncoder().encode(cmd + '\n'));
+}
+
+// ---------- Message handling ----------
+function handleLine(line) {
+  let m;
+  try { m = JSON.parse(line); } catch { log(line); return; }  // boot noise etc.
+  switch (m.type) {
+    case 'status': onStatus(m, line); break;
+    case 'progress': onProgress(m); break;
+    case 'result': onResult(m); break;
+    case 'log': log(m.msg); break;
+    default: log(line);
+  }
+}
+
+function onStatus(m) {
+  lastStatusAt = Date.now();
+  const sats = m.sats ?? 0;
+  if (m.state === 'no_data') setBanner('No GPS data', 'red');
+  else if (m.state === 'bad_baud') setBanner("Getting data but can't parse, check D6 / baud", 'red');
+  else if (m.state === 'searching') setBanner(`Searching, ${sats} sats`, 'amber');
+  else if (m.state === 'fix') setBanner(`Fix, ${sats} sats, HDOP ${fmt(m.hdop, 2)}`, 'green');
+
+  // Origin from the device is the source of truth (survives page reloads, not board resets)
+  if (m.origin_lat != null) {
+    if (!origin || origin.lat !== m.origin_lat || origin.lon !== m.origin_lon) {
+      origin = { lat: m.origin_lat, lon: m.origin_lon };
+      history = history.filter(h => h.t > Date.now() - 2000);  // fresh cloud for the new origin
+    }
+  } else origin = null;
+
+  $('sLat').textContent = m.lat != null ? m.lat.toFixed(7) : '--';
+  $('sLon').textContent = m.lon != null ? m.lon.toFixed(7) : '--';
+  $('sSats').textContent = sats;
+  $('sHdop').textContent = m.state === 'fix' ? fmt(m.hdop, 2) : '--';
+  $('sSpeed').textContent = m.speed != null ? m.speed.toFixed(2) + ' m/s' : '--';
+  $('sUtc').textContent = m.utc ?? '--';
+  $('sCounts').textContent = `${m.bytes} / ${m.parsed}`;
+
+  const now = Date.now();
+  if (m.lat != null) {
+    history.push({ t: now, lat: m.lat, lon: m.lon, dist: m.dist });
+  }
+  history = history.filter(h => h.t > now - CLOUD_WINDOW_MS);
+
+  if (m.dist != null) {
+    $('dist').innerHTML = `${m.dist.toFixed(2)}<small> m</small>`;
+    $('distNote').textContent = `Origin ${origin.lat.toFixed(7)}, ${origin.lon.toFixed(7)}`;
+  } else {
+    $('dist').innerHTML = '--<small> m</small>';
+    $('distNote').textContent = origin ? 'Waiting for fix' : 'No origin set';
+  }
+
+  const recent = history.filter(h => h.t > now - JITTER_WINDOW_MS && h.dist != null);
+  $('sJitter').textContent = recent.length ? Math.max(...recent.map(h => h.dist)).toFixed(2) + ' m' : '--';
+
+  if (recording) {
+    rawRows.push([new Date(now).toISOString(), m.state, m.sats, m.hdop, m.lat, m.lon, m.speed, m.utc,
+                  m.bytes, m.parsed, m.origin_lat, m.origin_lon, m.dist]);
+    $('recordInfo').textContent = `${rawRows.length} rows`;
+  }
+  drawPlot();
+}
+
+function onProgress(m) {
+  const pct = Math.min(100, 100 * m.elapsed_ms / m.total_ms);
+  const left = Math.max(0, Math.ceil((m.total_ms - m.elapsed_ms) / 1000));
+  $('progressBar').style.width = pct + '%';
+  $('progressText').textContent =
+    `${m.mode === 'origin' ? 'Setting origin' : 'Measuring point'}: ${left} s left, ${m.samples} good samples`;
+  setBusy(true);
+}
+
+function onResult(m) {
+  setBusy(false);
+  $('progressBar').style.width = '0';
+  if (!m.ok) {
+    $('progressText').textContent = m.cancelled ? 'Cancelled.' : (m.msg || 'Failed.');
+    log(m.cancelled ? `${m.mode} cancelled` : (m.msg || `${m.mode} failed`));
+    return;
+  }
+  if (m.mode === 'origin') {
+    $('progressText').textContent = `Origin set from ${m.samples} samples.`;
+    log(`Origin set: ${m.lat.toFixed(7)}, ${m.lon.toFixed(7)} (${m.samples} samples)`);
+  } else {
+    $('progressText').textContent = `Measured: GPS ${m.gps_m.toFixed(2)} m vs tape ${m.true_m.toFixed(2)} m`;
+    results.push({ ...m, time: new Date() });
+    renderResults();
+  }
+}
+
+// ---------- UI helpers ----------
+function fmt(v, d) { return v == null ? '--' : Number(v).toFixed(d); }
+
+function setBanner(text, cls) { $('banner').textContent = text; $('banner').className = cls; }
+
+let busy = false;
+function setControls(connected) {
+  $('originBtn').disabled = !connected || busy;
+  $('measureBtn').disabled = !connected || busy;
+  $('cancelBtn').disabled = !connected || !busy;
+}
+function setBusy(b) { busy = b; setControls(!!port); }
+
+function log(msg) {
+  const el = $('log');
+  el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+$('originBtn').onclick = () => { send('origin'); setBusy(true); $('progressText').textContent = 'Starting...'; };
+$('cancelBtn').onclick = () => send('cancel');
+$('measureBtn').onclick = () => {
+  const v = parseFloat($('trueDist').value);
+  if (!(v >= 0)) { log('Enter the tape distance in meters first.'); $('trueDist').focus(); return; }
+  if (!origin) { log('Set an origin first.'); return; }
+  send('measure ' + v); setBusy(true); $('progressText').textContent = 'Starting...';
+};
+
+function renderResults() {
+  const tb = $('results');
+  tb.innerHTML = '';
+  results.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    [i + 1, r.true_m.toFixed(2), r.gps_m.toFixed(2), (r.error_m >= 0 ? '+' : '') + r.error_m.toFixed(2),
+     r.samples, r.time.toLocaleTimeString()].forEach(v => {
+      const td = document.createElement('td'); td.textContent = v; tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+  $('csvBtn').disabled = results.length === 0;
+}
+
+function downloadCSV(name, header, rows) {
+  const esc = (v) => v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+  const text = [header, ...rows].map(r => r.map(esc).join(',')).join('\n') + '\n';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+
+$('csvBtn').onclick = () => downloadCSV(`gps-results-${stamp()}.csv`,
+  ['n', 'true_m', 'gps_m', 'error_m', 'samples', 'lat', 'lon', 'time'],
+  results.map((r, i) => [i + 1, r.true_m, r.gps_m, r.error_m, r.samples, r.lat, r.lon, r.time.toISOString()]));
+
+$('recordToggle').onchange = (e) => {
+  recording = e.target.checked;
+  if (recording) {
+    rawRows = [];
+    $('recordInfo').textContent = '0 rows';
+  } else if (rawRows.length) {
+    downloadCSV(`gps-raw-${stamp()}.csv`,
+      ['pc_time', 'state', 'sats', 'hdop', 'lat', 'lon', 'speed_mps', 'utc', 'bytes', 'parsed', 'origin_lat', 'origin_lon', 'dist_m'],
+      rawRows);
+    $('recordInfo').textContent = `Saved ${rawRows.length} rows`;
+  }
+};
+
+// ---------- Plot ----------
+const canvas = $('plot'), ctx = canvas.getContext('2d');
+
+function toEN(lat, lon, ref) {
+  const k = Math.PI / 180;
+  return { e: (lon - ref.lon) * k * Math.cos(ref.lat * k) * R_EARTH, n: (lat - ref.lat) * k * R_EARTH };
+}
+
+function drawPlot() {
+  const dpr = window.devicePixelRatio || 1;
+  const size = canvas.clientWidth;
+  if (canvas.width !== size * dpr) { canvas.width = canvas.height = size * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, size, size);
+
+  // Reference: origin if set, else mean of recent points
+  let ref = origin, label = 'origin';
+  if (!ref && history.length) {
+    ref = { lat: history.reduce((s, h) => s + h.lat, 0) / history.length,
+            lon: history.reduce((s, h) => s + h.lon, 0) / history.length };
+    label = 'recent mean (no origin set)';
+  }
+  const pts = ref ? history.map(h => ({ ...toEN(h.lat, h.lon, ref), t: h.t })) : [];
+
+  // Scale: always show the 5 m ring, grow to fit outliers
+  const maxR = Math.max(5.5, ...pts.map(p => Math.hypot(p.e, p.n) * 1.1));
+  const c = size / 2, scale = (size / 2 - 16) / maxR;
+
+  // Axes
+  ctx.strokeStyle = '#2a2f3a'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(c, 0); ctx.lineTo(c, size); ctx.moveTo(0, c); ctx.lineTo(size, c); ctx.stroke();
+
+  // Rings
+  ctx.font = '13px -apple-system, sans-serif'; ctx.fillStyle = '#8b93a7';
+  for (const r of [1, 2, 5, 10, 20, 50].filter(r => r <= maxR)) {
+    ctx.strokeStyle = r <= 5 ? '#3a4152' : '#262b36';
+    ctx.beginPath(); ctx.arc(c, c, r * scale, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillText(r + ' m', c + r * scale * 0.707 + 4, c - r * scale * 0.707 - 4);
+  }
+  ctx.fillText('N', c + 6, 16); ctx.fillText('E', size - 16, c - 6);
+  ctx.fillText(ref ? `centered on ${label}` : 'waiting for fix', 10, size - 10);
+
+  // Points, older = fainter
+  const now = Date.now();
+  pts.forEach((p, i) => {
+    const age = (now - p.t) / CLOUD_WINDOW_MS;
+    const last = i === pts.length - 1;
+    ctx.fillStyle = last ? '#ffffff' : `rgba(76,141,255,${Math.max(0.12, 1 - age)})`;
+    ctx.beginPath();
+    ctx.arc(c + p.e * scale, c - p.n * scale, last ? 5 : 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Origin marker
+  if (origin) {
+    ctx.strokeStyle = '#30a46c'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(c - 8, c); ctx.lineTo(c + 8, c); ctx.moveTo(c, c - 8); ctx.lineTo(c, c + 8); ctx.stroke();
+  }
+}
+window.addEventListener('resize', drawPlot);
+drawPlot();
+
+// Stale-data watchdog: device stopped sending
+setInterval(() => {
+  if (port && lastStatusAt && Date.now() - lastStatusAt > 3000) setBanner('No messages from board (reset? unplugged?)', 'red');
+}, 1000);
+</script>
+</body>
+</html>
