@@ -59,12 +59,21 @@ const float ACCEL_BIAS_X_FIXED = -0.10805f;
 const float ACCEL_BIAS_Y_FIXED = -0.11242f;
 const float ACCEL_BIAS_Z_FIXED = +0.34704f;
 
-// --- Magnetometer hard-iron offsets (uT) ---
+// --- Magnetometer ---
+// false = ignore the magnetometer: heading (yaw) comes from the gyro only and
+// starts at 0 deg at power-up/calibration. It drifts slowly (a few deg/min),
+// which is fine for short movements. Set true to use magnetic heading
+// (needs a magnetically clean mounting, see the offsets below).
+const bool  USE_MAGNETOMETER = false;
+
+// Hard-iron offsets (uT)
 // Run the 'm' command once with the sensor mounted in its final enclosure,
 // then paste the printed numbers here so they are used at every power-up.
-const float MAG_OFFSET_X_FIXED = 0.0f;
-const float MAG_OFFSET_Y_FIXED = 0.0f;
-const float MAG_OFFSET_Z_FIXED = 0.0f;
+// Measured 2026-10-14 on the breadboard prototype ('m' calibration for Z,
+// flat 360-degree spin for X and Y). Redo if anything on the board changes.
+const float MAG_OFFSET_X_FIXED = -101.97f;
+const float MAG_OFFSET_Y_FIXED = 115.34f;
+const float MAG_OFFSET_Z_FIXED = 126.82f;
 const float MAG_CAL_SECONDS    = 20.0f;
 
 // Magnetic declination at your location (deg, east = positive).
@@ -307,7 +316,7 @@ void updateOrientation(const Vec3 &a, const Vec3 &g, const Vec3 &m, float dt) {
   if (!filterStarted) {
     roll = rollAcc;
     pitch = pitchAcc;
-    heading = headingMag;
+    heading = USE_MAGNETOMETER ? headingMag : 0;
     filterStarted = true;
     return;
   }
@@ -341,7 +350,7 @@ void updateOrientation(const Vec3 &a, const Vec3 &g, const Vec3 &m, float dt) {
   // Skip if the field strength is unrealistic (magnet or steel nearby).
   float alphaHead = TAU_HEADING / (TAU_HEADING + dt);
   float fieldUT   = sqrt(m.x * m.x + m.y * m.y + m.z * m.z);
-  if (fieldUT > MAG_MIN_UT && fieldUT < MAG_MAX_UT) {
+  if (USE_MAGNETOMETER && fieldUT > MAG_MIN_UT && fieldUT < MAG_MAX_UT) {
     heading += (1 - alphaHead) * wrapPi(headingMag - heading);
   }
 
