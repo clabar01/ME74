@@ -81,6 +81,19 @@
   .chart { grid-column: span 6; }
   .chart canvas { width: 100%; height: 220px; display: block; }
   .messages { grid-column: span 12; }
+  .walk { grid-column: span 12; }
+  .walk-top { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; margin-bottom: 12px; }
+  .walk-top .big { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .walk-top .label { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .walk-top .sub { color: var(--muted); font-size: 12px; }
+  .walk-controls { display: grid; gap: 8px; margin-left: auto; }
+  .walk-controls label { display: flex; align-items: center; gap: 8px; justify-content: flex-end; color: var(--muted); }
+  .walk-controls .row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  input[type=number] {
+    font: inherit; width: 80px; padding: 5px 8px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  .err { color: var(--muted); font-size: 12px; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { text-align: right; padding: 5px 6px; border-bottom: 1px solid var(--border); }
   th:first-child, td:first-child { text-align: left; }
@@ -128,6 +141,43 @@
   <section class="card angle">
     <canvas id="dialYaw"></canvas>
     <div><h2>Yaw (heading)</h2><div class="value" id="vYaw">--</div><div class="sub">clockwise from north</div></div>
+  </section>
+
+  <section class="card walk">
+    <h2>Distance walked <span id="walkState" class="pill" style="text-transform:none;letter-spacing:0;margin-left:6px">--</span></h2>
+    <div class="walk-top">
+      <div>
+        <div class="label">STEP METHOD</div>
+        <div class="big" id="wStepDist">--</div>
+        <div class="sub" id="wStepSub">steps × step length</div>
+      </div>
+      <div>
+        <div class="label">INTEGRATION METHOD</div>
+        <div class="big" id="wIntDist">--</div>
+        <div class="sub" id="wIntSub">corrected when the bin stops</div>
+      </div>
+      <div class="walk-controls">
+        <label>Step length <input id="inStepLen" type="number" step="0.01" min="0.2" max="1.5"> m</label>
+        <label>Measured distance of last walk <input id="inActual" type="number" step="0.01" min="0"> m</label>
+        <div class="row">
+          <button id="btnSaveActual">Save measured distance</button>
+          <button id="btnStepFromActual" title="Step length = measured distance / steps of the last walk">Set step length from it</button>
+        </div>
+        <div class="row">
+          <button id="btnWalkCopy">Copy table</button>
+          <button id="btnWalkClear">Clear walks</button>
+        </div>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th>Walk</th><th>Duration</th><th>Steps</th><th>Step method</th><th>Integration</th><th>Measured</th></tr></thead>
+      <tbody id="walkRows"><tr><td colspan="6" style="text-align:left;color:var(--muted)">No walks yet</td></tr></tbody>
+    </table>
+    <div class="note">
+      How to record a walk: bin on the ground and still → pick it up → walk → set it down and let it sit still.
+      A walk starts when the still bin starts moving and ends 0.3 s after it is still again.
+      Both methods are a first prototype: check them against tape-measured walks before trusting the numbers.
+    </div>
   </section>
 
   <section class="card drift">
@@ -236,7 +286,7 @@ function resetDrift() {
 
 function resetAll() {
   samples = []; latest = null; lastRawUs = null; wrapOffsetUs = 0;
-  rateTimes = []; resetDrift();
+  rateTimes = []; resetDrift(); resetWalkDetection();
 }
 
 // ============================================================================
@@ -252,9 +302,9 @@ function handleLine(line) {
   }
   // Anything else is a status message from the sketch
   addMessage(line);
-  if (line.includes("Calibrating")) { calibrating = true; updateStatus(); }
+  if (line.includes("Calibrating")) { calibrating = true; resetWalkDetection(); updateStatus(); }
   if (line.includes("Calibration done")) {
-    calibrating = false; resetDrift(); updateStatus();
+    calibrating = false; resetDrift(); resetWalkDetection(); updateStatus();
     send("l");   // make sure logging mode is on (e.g. after the board restarted)
   }
   if (line.startsWith("Accel X:") && !oldFirmwareWarned) {
@@ -322,6 +372,8 @@ function handleSample(s) {
     if (logT0 === null) logT0 = s.t;
     logRows.push([(s.t - logT0).toFixed(4), ...s.raw].join(","));
   }
+
+  updateWalk(s);
 
   latest = s;
   lastDataAt = performance.now();
@@ -466,16 +518,25 @@ function demoTick() {
   if (performance.now() < demo.pausedUntil) return;   // "calibrating"
   demo.t += 0.02;
   const t = demo.t;
-  const roll = 1.5 + 0.8 * Math.sin(t * 0.4) + 0.03 * gauss();
-  const pitch = -2.0 + 0.6 * Math.sin(t * 0.25) + 0.03 * gauss();
-  const yaw = (((137 + 4 * Math.sin(t * 0.1) + 0.15 * gauss()) % 360) + 360) % 360;
-  const r = roll / DEG, p = pitch / DEG, g = 9.80665;
-  const ax = -g * Math.sin(p) + 0.02 * gauss();
-  const ay = g * Math.sin(r) * Math.cos(p) + 0.02 * gauss();
-  const az = g * Math.cos(r) * Math.cos(p) + 0.02 * gauss();
-  const gx = 0.8 * 0.4 * Math.cos(t * 0.4) / DEG + 0.002 * gauss() + 0.0003;
-  const gy = 0.6 * 0.25 * Math.cos(t * 0.25) / DEG + 0.002 * gauss();
-  const gz = -0.4 * Math.cos(t * 0.1) / DEG + 0.002 * gauss() - 0.0002;
+  // Repeating cycle: still 5 s, carry the bin 5 m in 5 s, still 4 s
+  const T = 5, tau = (t % 14) - 5, walking = tau >= 0 && tau < T;
+  let roll = 1.5, pitch = -2.0, rollRate = 0, pitchRate = 0, aFwd = 0, aUp = 0;
+  const yaw = 137;
+  if (walking) {
+    const w1 = 2 * Math.PI * 0.9, w2 = 2 * Math.PI * 1.8;     // bin rocking, steps at 1.8 per s
+    roll += 4 * Math.sin(w1 * tau);  rollRate = 4 * w1 * Math.cos(w1 * tau);
+    pitch += 3 * Math.sin(w2 * tau); pitchRate = 3 * w2 * Math.cos(w2 * tau);
+    aFwd = (2 * Math.PI / T) * Math.sin(2 * Math.PI * tau / T);   // smooth 0 -> 2 m/s -> 0, 5 m total
+    aUp = 1.5 * Math.sin(w2 * tau);
+  }
+  roll += 0.03 * gauss(); pitch += 0.03 * gauss();
+  // World acceleration (incl. gravity) -> sensor axes
+  const R = rotMatrix(roll, pitch, yaw), h = yaw / DEG;
+  const e = [aFwd * Math.cos(h), -aFwd * Math.sin(h), aUp + 9.80665];
+  const [ax, ay, az] = [0, 1, 2].map((i) => R[0][i] * e[0] + R[1][i] * e[1] + R[2][i] * e[2] + 0.02 * gauss());
+  const gx = rollRate / DEG + 0.002 * gauss();
+  const gy = pitchRate / DEG + 0.002 * gauss();
+  const gz = 0.002 * gauss();
   const us = Math.round(t * 1e6) + 5000000;
   const f = (v, d) => v.toFixed(d);
   handleLine(`LOG,${us},${f(ax, 4)},${f(ay, 4)},${f(az, 4)},${f(gx, 5)},${f(gy, 5)},${f(gz, 5)},` +
@@ -488,6 +549,174 @@ function demoCommand(ch) {
     handleLine("Calibrating... keep the sensor still.");
     demo.pausedUntil = performance.now() + 3000;
     setTimeout(() => demo && handleLine("Calibration done."), 3000);
+  }
+}
+
+// ============================================================================
+// Distance walked (prototype)
+//   Step method:        count the bin's up-down bounces x step length
+//   Integration method: integrate horizontal acceleration twice while the bin
+//                       moves. The bin must end at zero speed, so any speed
+//                       left at the end is drift; removing it (assuming it grew
+//                       steadily) gives: distance = p_end - v_end * T / 2
+// ============================================================================
+const WALK = {
+  MOVE_GYRO: 0.25,       // rad/s (~14 deg/s): rotating faster than this = moving
+  MOVE_ACCEL: 0.6,       // m/s^2: |accel| further than this from 1 g = moving
+  STILL_SAMPLES: 15,     // this many still samples in a row (0.3 s) = still
+  STEP_THRESHOLD: 0.8,   // m/s^2: upward bounce needed to count a step
+  STEP_MIN_GAP: 0.35,    // s: minimum time between steps
+  EDGE_IGNORE: 0.5,      // s: ignore bounces just after pick-up and before set-down
+  SMOOTH_N: 7,           // samples averaged to smooth the bounce signal
+  MIN_DISTANCE: 0.3,     // m: shorter "walks" (bumps) are ignored
+};
+const GRAVITY = 9.80665;
+
+let walkState = "waiting";   // waiting -> still <-> moving
+let stillCount = 0;
+let walk = null;             // the walk in progress
+let walks = [];              // finished walks
+let stepLength = 0.55;
+try { stepLength = parseFloat(localStorage.getItem("imuStepLength")) || 0.55; } catch (e) {}
+
+// Rotation matrix from sensor axes to world axes (x = north, y = west, z = up),
+// using the same roll/pitch/yaw convention as the firmware.
+function rotMatrix(rollDeg, pitchDeg, headingDeg) {
+  const f = rollDeg / DEG, th = pitchDeg / DEG, ps = -headingDeg / DEG;  // yaw is counter-clockwise
+  const cf = Math.cos(f), sf = Math.sin(f), ct = Math.cos(th), st = Math.sin(th);
+  const cp = Math.cos(ps), sp = Math.sin(ps);
+  return [[cp * ct, cp * st * sf - sp * cf, cp * st * cf + sp * sf],
+          [sp * ct, sp * st * sf + cp * cf, sp * st * cf - cp * sf],
+          [-st, ct * sf, ct * cf]];
+}
+
+// Acceleration in world axes with gravity removed (m/s^2)
+function worldAccel(s) {
+  const R = rotMatrix(s.roll, s.pitch, s.yaw);
+  const a = [s.ax, s.ay, s.az];
+  const w = R.map((row) => row[0] * a[0] + row[1] * a[1] + row[2] * a[2]);
+  return { x: w[0], y: w[1], z: w[2] - GRAVITY };
+}
+
+function resetWalkDetection() {
+  walkState = "waiting"; stillCount = 0; walk = null;
+}
+
+function updateWalk(s) {
+  const moving = Math.hypot(s.gx, s.gy, s.gz) > WALK.MOVE_GYRO ||
+                 Math.abs(Math.hypot(s.ax, s.ay, s.az) - GRAVITY) > WALK.MOVE_ACCEL;
+  stillCount = moving ? 0 : stillCount + 1;
+
+  if (walkState === "waiting") {
+    if (stillCount >= WALK.STILL_SAMPLES) walkState = "still";
+    return;
+  }
+  if (walkState === "still") {
+    if (!moving) return;
+    walkState = "moving";
+    walk = { startT: s.t, lastMoveT: s.t, lastT: null, aPrev: null,
+             v: { x: 0, y: 0 }, p: { x: 0, y: 0 }, bounce: [], smooth: [], steps: [] };
+  }
+
+  // --- moving: integrate horizontal acceleration ---
+  const a = worldAccel(s);
+  if (walk.lastT !== null) {
+    const dt = s.t - walk.lastT;
+    if (dt > 0 && dt < 0.2) {
+      const vx0 = walk.v.x, vy0 = walk.v.y;
+      walk.v.x += 0.5 * (a.x + walk.aPrev.x) * dt;   // trapezoid rule
+      walk.v.y += 0.5 * (a.y + walk.aPrev.y) * dt;
+      walk.p.x += 0.5 * (vx0 + walk.v.x) * dt;
+      walk.p.y += 0.5 * (vy0 + walk.v.y) * dt;
+    }
+  }
+  walk.aPrev = a; walk.lastT = s.t;
+  if (moving) walk.lastMoveT = s.t;
+
+  // --- steps: peaks in the smoothed up-down acceleration ---
+  walk.bounce.push({ t: s.t, z: a.z });
+  if (walk.bounce.length > WALK.SMOOTH_N) walk.bounce.shift();
+  if (walk.bounce.length === WALK.SMOOTH_N) {
+    const mid = walk.bounce[Math.floor(WALK.SMOOTH_N / 2)];
+    walk.smooth.push({ t: mid.t, v: mean(walk.bounce.map((b) => b.z)) });
+    if (walk.smooth.length > 3) walk.smooth.shift();
+    if (walk.smooth.length === 3) {
+      const [p0, p1, p2] = walk.smooth;
+      const last = walk.steps[walk.steps.length - 1];
+      if (p1.v > WALK.STEP_THRESHOLD && p1.v >= p0.v && p1.v > p2.v &&
+          p1.t - walk.startT > WALK.EDGE_IGNORE &&
+          (last === undefined || p1.t - last >= WALK.STEP_MIN_GAP)) {
+        walk.steps.push(p1.t);
+      }
+    }
+  }
+
+  if (stillCount >= WALK.STILL_SAMPLES) finishWalk(s);
+}
+
+function finishWalk(s) {
+  const T = s.t - walk.startT;
+  const px = walk.p.x - walk.v.x * T / 2;
+  const py = walk.p.y - walk.v.y * T / 2;
+  const steps = walk.steps.filter((t) => t < walk.lastMoveT - WALK.EDGE_IGNORE).length;
+  const intDist = Math.hypot(px, py);
+  walkState = "still";
+  const w = walk;
+  walk = null;
+  if (steps === 0 && intDist < WALK.MIN_DISTANCE) return;   // just a bump
+  walks.push({ n: walks.length + 1, duration: w.lastMoveT - w.startT, steps, intDist, actual: null });
+  addMessage(`Walk ${walks.length}: ${steps} steps (${(steps * stepLength).toFixed(2)} m), ` +
+             `integration ${intDist.toFixed(2)} m`);
+  renderWalkTable();
+}
+
+function fmtErr(est, actual) {
+  if (actual === null) return "";
+  const e = est - actual;
+  return ` <span class="err">(${e >= 0 ? "+" : ""}${e.toFixed(2)})</span>`;
+}
+
+function renderWalkTable() {
+  const body = $("walkRows");
+  if (!walks.length) {
+    body.innerHTML = `<tr><td colspan="6" style="text-align:left;color:var(--muted)">No walks yet</td></tr>`;
+    return;
+  }
+  body.innerHTML = walks.slice().reverse().map((w) => {
+    const sd = w.steps * stepLength;
+    return `<tr><td>${w.n}</td><td>${w.duration.toFixed(1)} s</td><td>${w.steps}</td>` +
+           `<td>${sd.toFixed(2)} m${fmtErr(sd, w.actual)}</td>` +
+           `<td>${w.intDist.toFixed(2)} m${fmtErr(w.intDist, w.actual)}</td>` +
+           `<td>${w.actual === null ? "--" : w.actual.toFixed(2) + " m"}</td></tr>`;
+  }).join("");
+}
+
+function updateWalkPanel() {
+  const pill = $("walkState");
+  const states = {
+    waiting: ["Hold the bin still to start", "pill"],
+    still: ["Ready: pick up and walk", "pill ok"],
+    moving: ["Walking...", "pill warn"],
+  };
+  const [text, cls] = connected ? states[walkState] : ["Not connected", "pill"];
+  pill.textContent = text; pill.className = cls;
+
+  if (walk) {
+    const steps = walk.steps.length;
+    $("wStepDist").textContent = (steps * stepLength).toFixed(2) + " m";
+    $("wStepSub").textContent = `${steps} steps so far`;
+    $("wIntDist").textContent = Math.hypot(walk.p.x, walk.p.y).toFixed(2) + " m";
+    $("wIntSub").textContent = "live, uncorrected until the bin stops";
+  } else if (walks.length) {
+    const w = walks[walks.length - 1];
+    $("wStepDist").textContent = (w.steps * stepLength).toFixed(2) + " m";
+    $("wStepSub").textContent = `last walk: ${w.steps} steps × ${stepLength.toFixed(2)} m`;
+    $("wIntDist").textContent = w.intDist.toFixed(2) + " m";
+    $("wIntSub").textContent = "last walk, corrected";
+  } else {
+    $("wStepDist").textContent = "--"; $("wIntDist").textContent = "--";
+    $("wStepSub").textContent = "steps × step length";
+    $("wIntSub").textContent = "corrected when the bin stops";
   }
 }
 
@@ -677,6 +906,7 @@ function updateNumbers() {
   $("sLog").textContent = logging
     ? `${logRows.length} rows (${(logRows.length / 50).toFixed(0)} s)` : "off";
 
+  updateWalkPanel();
   legend($("legAccel"), s, ["ax", "ay", "az"], 1, 3);
   legend($("legGyro"), s, ["gx", "gy", "gz"], DEG, 2);
 
@@ -713,6 +943,40 @@ $("btnDemo").onclick = startDemo;
 $("btnCal").onclick = () => send("0");
 $("btnResetDrift").onclick = () => { resetDrift(); addMessage("Drift reset."); };
 $("btnLog").onclick = () => (logging ? stopLogging() : startLogging());
+$("inStepLen").value = stepLength.toFixed(2);
+$("inStepLen").onchange = () => {
+  const v = parseFloat($("inStepLen").value);
+  if (v > 0) {
+    stepLength = v;
+    try { localStorage.setItem("imuStepLength", String(v)); } catch (e) {}
+    renderWalkTable();
+  }
+};
+$("btnSaveActual").onclick = () => {
+  const v = parseFloat($("inActual").value);
+  if (!walks.length || !(v > 0)) { addMessage("Do a walk and type its measured distance first."); return; }
+  walks[walks.length - 1].actual = v;
+  renderWalkTable();
+};
+$("btnStepFromActual").onclick = () => {
+  const w = walks[walks.length - 1];
+  const v = parseFloat($("inActual").value);
+  if (!w || !(v > 0) || !w.steps) { addMessage("Need a last walk with steps and its measured distance."); return; }
+  w.actual = v;
+  $("inStepLen").value = (v / w.steps).toFixed(3);
+  $("inStepLen").onchange();
+  addMessage(`Step length set to ${(v / w.steps).toFixed(3)} m (${v} m / ${w.steps} steps).`);
+};
+$("btnWalkClear").onclick = () => { walks = []; renderWalkTable(); };
+$("btnWalkCopy").onclick = async () => {
+  const lines = ["walk\tduration_s\tsteps\tstep_length_m\tstep_method_m\tintegration_m\tmeasured_m"];
+  for (const w of walks) {
+    lines.push([w.n, w.duration.toFixed(2), w.steps, stepLength.toFixed(3), (w.steps * stepLength).toFixed(2),
+                w.intDist.toFixed(2), w.actual === null ? "" : w.actual].join("\t"));
+  }
+  try { await navigator.clipboard.writeText(lines.join("\n")); addMessage("Walk table copied (paste into Excel/Sheets)."); }
+  catch (e) { addMessage("Could not copy: " + e.message); }
+};
 window.addEventListener("resize", () => (dirty = true));
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => (dirty = true));
 
