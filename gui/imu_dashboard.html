@@ -176,7 +176,10 @@
     <div class="note">
       How to record a walk: bin on the ground and still → pick it up → walk → set it down and let it sit still.
       A walk starts when the still bin starts moving and ends 0.3 s after it is still again.
-      Both methods are a first prototype: check them against tape-measured walks before trusting the numbers.
+      Both methods are a first prototype: check them against tape-measured walks before trusting the numbers.<br>
+      To save everything: press <b>Start logging</b>, do all your walks (enter each measured distance), then
+      <b>Stop logging</b>. You get one CSV with the sensor data and each walk's results (rows where
+      <code>walk_steps</code> is filled in).
     </div>
   </section>
 
@@ -233,8 +236,12 @@ const WINDOW_S = 10;        // seconds of data shown in the graphs
 const AVG_N = 50;           // samples averaged for drift start/now values (1 s at 50 Hz)
 const DEG = 180 / Math.PI;
 // Same columns as tools/imu_still_test.py
+// Sensor columns match tools/imu_still_test.py; the walk columns come after
 const CSV_COLUMNS = ["t_s", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
-                     "roll_deg", "pitch_deg", "heading_deg", "dt_ms", "overruns"];
+                     "roll_deg", "pitch_deg", "heading_deg", "dt_ms", "overruns",
+                     "walk_state", "walk_n", "steps_so_far",
+                     "walk_duration_s", "walk_steps", "step_length_m", "step_method_m",
+                     "integration_m", "measured_m"];
 
 const $ = (id) => document.getElementById(id);
 
@@ -368,12 +375,20 @@ function handleSample(s) {
   recent.push(s);
   if (recent.length > AVG_N) recent.shift();
 
+  const finished = updateWalk(s);   // the walk record if a walk ended on this sample
+
   if (logging) {
     if (logT0 === null) logT0 = s.t;
-    logRows.push([(s.t - logT0).toFixed(4), ...s.raw].join(","));
+    // Sensor data + where we are in the walk. The walk results are added to the
+    // row where the walk ended when the file is saved (so measured distances
+    // typed in later are included).
+    const walkN = walk ? walks.length + 1 : (finished ? finished.n : "");
+    logRows.push({
+      text: [(s.t - logT0).toFixed(4), ...s.raw, walkState, walkN,
+             walk ? walk.steps.length : (finished ? finished.steps : "")].join(","),
+      walkResult: finished,
+    });
   }
-
-  updateWalk(s);
 
   latest = s;
   lastDataAt = performance.now();
@@ -481,7 +496,15 @@ function stopLogging() {
   logging = false;
   updateStatus();
   if (!logRows.length) { addMessage("Logging stopped (no data recorded)."); return; }
-  const csv = CSV_COLUMNS.join(",") + "\n" + logRows.join("\n") + "\n";
+  const lines = logRows.map((r) => {
+    const w = r.walkResult;
+    const result = w
+      ? [w.duration.toFixed(2), w.steps, stepLength.toFixed(3), (w.steps * stepLength).toFixed(2),
+         w.intDist.toFixed(2), w.actual === null ? "" : w.actual]
+      : ["", "", "", "", "", ""];
+    return r.text + "," + result.join(",");
+  });
+  const csv = CSV_COLUMNS.join(",") + "\n" + lines.join("\n") + "\n";
   const d = new Date();
   const pad = (x) => String(x).padStart(2, "0");
   const name = `imu_log_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
@@ -609,10 +632,10 @@ function updateWalk(s) {
 
   if (walkState === "waiting") {
     if (stillCount >= WALK.STILL_SAMPLES) walkState = "still";
-    return;
+    return null;
   }
   if (walkState === "still") {
-    if (!moving) return;
+    if (!moving) return null;
     walkState = "moving";
     walk = { startT: s.t, lastMoveT: s.t, lastT: null, aPrev: null,
              v: { x: 0, y: 0 }, p: { x: 0, y: 0 }, bounce: [], smooth: [], steps: [] };
@@ -651,7 +674,8 @@ function updateWalk(s) {
     }
   }
 
-  if (stillCount >= WALK.STILL_SAMPLES) finishWalk(s);
+  if (stillCount >= WALK.STILL_SAMPLES) return finishWalk(s);
+  return null;
 }
 
 function finishWalk(s) {
@@ -663,11 +687,13 @@ function finishWalk(s) {
   walkState = "still";
   const w = walk;
   walk = null;
-  if (steps === 0 && intDist < WALK.MIN_DISTANCE) return;   // just a bump
-  walks.push({ n: walks.length + 1, duration: w.lastMoveT - w.startT, steps, intDist, actual: null });
+  if (steps === 0 && intDist < WALK.MIN_DISTANCE) return null;   // just a bump
+  const record = { n: walks.length + 1, duration: w.lastMoveT - w.startT, steps, intDist, actual: null };
+  walks.push(record);
   addMessage(`Walk ${walks.length}: ${steps} steps (${(steps * stepLength).toFixed(2)} m), ` +
              `integration ${intDist.toFixed(2)} m`);
   renderWalkTable();
+  return record;
 }
 
 function fmtErr(est, actual) {
