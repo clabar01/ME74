@@ -5,7 +5,10 @@
 #include <math.h>
 
 // Change to 1 or 2 on each ESP32
+// (PlatformIO envs radio_node1 / radio_node2 set this for you)
+#ifndef NODE_ID
 #define NODE_ID 1
+#endif
 
 // XIAO ESP32S3 wiring
 #define RFM95_CS  D3

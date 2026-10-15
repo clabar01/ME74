@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radio Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --line: #2a2f3a;
+    --text: #e8eaf0;
+    --muted: #8b93a7;
+    --red: #e5484d;
+    --amber: #f5a524;
+    --green: #30a46c;
+    --blue: #4c8dff;
+    --violet: #b48cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 18px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 16px 24px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 22px; margin: 0; flex: 1; }
+  #portInfo { color: var(--muted); font-size: 15px; }
+  button, input {
+    font: inherit; color: var(--text); background: #232836;
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px;
+  }
+  button { cursor: pointer; font-weight: 600; }
+  button:hover:not(:disabled) { background: #2c3243; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  button.danger { border-color: var(--red); color: #ff8a8d; }
+  input[type=number] { width: 110px; }
+  main {
+    display: grid; gap: 16px; padding: 16px 24px;
+    grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; min-width: 0; }
+  .panel h2 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .full { grid-column: 1 / -1; }
+
+  #banner {
+    grid-column: 1 / -1; border-radius: 12px; padding: 18px 24px;
+    font-size: 28px; font-weight: 700; background: #232836; color: var(--muted);
+  }
+  #banner.red { background: rgba(229,72,77,.18); color: #ff8a8d; border: 1px solid var(--red); }
+  #banner.amber { background: rgba(245,165,36,.16); color: #ffc65c; border: 1px solid var(--amber); }
+  #banner.green { background: rgba(48,164,108,.18); color: #5fd49a; border: 1px solid var(--green); }
+
+  .bigrow { display: flex; gap: 32px; flex-wrap: wrap; }
+  .big { font-size: 80px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  .big small { font-size: 30px; color: var(--muted); font-weight: 600; }
+  .bigLabel { color: var(--muted); font-size: 14px; margin-bottom: 4px; }
+  #distNote { color: var(--muted); margin-top: 10px; }
+
+  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 24px; }
+  .stat .k { color: var(--muted); font-size: 14px; }
+  .stat .v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  canvas { width: 100%; height: 240px; display: block; background: #0b0d11; border-radius: 8px; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px; margin-top: 8px; }
+  .legend i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .progress { height: 14px; background: #0b0d11; border-radius: 7px; overflow: hidden; margin-top: 14px; }
+  .progress > div { height: 100%; width: 0; background: var(--blue); transition: width .3s; }
+  .progressText { color: var(--muted); margin-top: 6px; min-height: 1.4em; }
+  .hint { color: var(--muted); font-size: 15px; margin: 6px 0 0; }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-size: 14px; font-weight: 600; }
+  th:first-child, td:first-child { text-align: left; }
+  .tableWrap { overflow-x: auto; }
+  .emptyRow td { text-align: center; color: var(--muted); }
+  td button { padding: 4px 10px; font-size: 14px; }
+
+  #fitText { margin-top: 10px; min-height: 1.4em; }
+  #log { height: 180px; overflow-y: auto; font: 14px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; }
+  label.toggle { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  label.toggle input { width: 20px; height: 20px; }
+
+  details summary { cursor: pointer; color: var(--muted); font-size: 14px; text-transform: uppercase; letter-spacing: .08em; }
+  details ol { margin: 12px 0 0; padding-left: 22px; }
+  details li { margin-bottom: 6px; }
+  code { font: 15px ui-monospace, Menlo, monospace; background: #0b0d11; padding: 1px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Radio Dashboard</h1>
+  <span id="portInfo">Not connected</span>
+  <button id="connectBtn" class="primary">Connect</button>
+</header>
+
+<main>
+  <div id="banner">Not connected</div>
+
+  <section class="panel">
+    <h2>Live link</h2>
+    <div class="bigrow">
+      <div>
+        <div class="bigLabel">Estimated distance</div>
+        <div class="big" id="dist">--<small> m</small></div>
+      </div>
+      <div>
+        <div class="bigLabel">RSSI (filtered)</div>
+        <div class="big" id="rssiBig">--<small> dBm</small></div>
+      </div>
+    </div>
+    <div id="distNote">Not calibrated</div>
+  </section>
+
+  <section class="panel">
+    <h2>Stats</h2>
+    <div class="stats">
+      <div class="stat"><div class="k">This node / listening for</div><div class="v" id="sNode">--</div></div>
+      <div class="stat"><div class="k">Last packet</div><div class="v" id="sAge">--</div></div>
+      <div class="stat"><div class="k">Raw RSSI / SNR</div><div class="v" id="sRaw">--</div></div>
+      <div class="stat"><div class="k">RSSI spread (last 20)</div><div class="v" id="sSpread">--</div></div>
+      <div class="stat"><div class="k">Packets RX / missed (est.)</div><div class="v" id="sRx">--</div></div>
+      <div class="stat"><div class="k">TX OK / failed</div><div class="v" id="sTx">--</div></div>
+      <div class="stat"><div class="k">Reference</div><div class="v" id="sRef">--</div></div>
+      <div class="stat"><div class="k">Path loss exponent n</div><div class="v" id="sN">--</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>RSSI over time (last 3 min)</h2>
+    <canvas id="rssiChart"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--blue)"></i>raw packet</span>
+      <span><i style="background:#fff"></i>filtered (same filter as firmware)</span>
+      <span><i style="background:var(--green)"></i>reference RSSI</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Distance over time (last 3 min)</h2>
+    <canvas id="distChart"></canvas>
+    <div class="legend">
+      <span><i style="background:#fff"></i>firmware estimate</span>
+      <span><i style="background:var(--amber)"></i>tape distance (from box below)</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>1. Calibrate</h2>
+    <div class="controls">
+      <label for="calDist">Known distance (m)</label>
+      <input id="calDist" type="number" min="0.1" step="0.1" value="1.0">
+      <button id="calBtn" disabled>Calibrate</button>
+    </div>
+    <p class="hint">Firmware averages 20 packets from the other node, about 60 s. Don't move the boards.</p>
+    <div class="progress"><div id="calBar"></div></div>
+    <div class="progressText" id="calText"></div>
+
+    <h2 style="margin-top:20px">Path loss exponent</h2>
+    <div class="controls">
+      <input id="nInput" type="number" min="1" max="6" step="0.1" value="2.0">
+      <button id="nBtn" disabled>Send n</button>
+      <button id="statusBtn" disabled>Refresh status</button>
+    </div>
+    <p class="hint">2.0 = free space, ~2.5 to 3 typical indoors. Firmware accepts 1 to 6.</p>
+  </section>
+
+  <section class="panel">
+    <h2>2. Measure a point</h2>
+    <div class="controls">
+      <label for="tapeDist">Tape distance (m)</label>
+      <input id="tapeDist" type="number" min="0.1" step="0.1" placeholder="e.g. 5.0">
+    </div>
+    <div class="controls" style="margin-top:12px">
+      <label for="ptPackets">Packets</label>
+      <input id="ptPackets" type="number" min="3" max="100" step="1" value="10">
+      <button id="ptBtn" disabled>Record point</button>
+      <button id="ptCancel" class="danger" disabled>Cancel</button>
+    </div>
+    <div class="controls" style="margin-top:12px">
+      <label class="toggle"><input type="checkbox" id="valToggle"> Validation (excluded from the n fit)</label>
+    </div>
+    <p class="hint">Distance is computed from the average raw RSSI, so you don't have to wait for the firmware filter to catch up after moving.</p>
+    <div class="progress"><div id="ptBar"></div></div>
+    <div class="progressText" id="ptText"></div>
+
+    <h2 style="margin-top:20px">Recording</h2>
+    <div class="controls">
+      <label class="toggle"><input type="checkbox" id="recordToggle"> Record every packet</label>
+      <span id="recordInfo" style="color:var(--muted)"></span>
+    </div>
+  </section>
+
+  <section class="panel full">
+    <div class="controls" style="justify-content:space-between; margin-bottom:12px">
+      <h2 style="margin:0">3. Training points (used in the fit)</h2>
+      <button id="csvBtn" disabled>Download CSV</button>
+    </div>
+    <div class="tableWrap">
+    <table>
+      <thead><tr><th>#</th><th>Tape (m)</th><th>Avg RSSI</th><th>Std</th><th>Avg SNR</th><th>Est. (m)</th><th>Error (m)</th><th>Firmware (m)</th><th>Pkts</th><th>Time</th><th></th></tr></thead>
+      <tbody id="results"><tr class="emptyRow"><td colspan="11">No training points yet</td></tr></tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="panel full">
+    <h2>Validation points (not used in the fit)</h2>
+    <div class="tableWrap">
+    <table>
+      <thead><tr><th>#</th><th>Tape (m)</th><th>Avg RSSI</th><th>Std</th><th>Board est. (m)</th><th>Board error (m)</th><th>Fit est. (m)</th><th>Fit error (m)</th><th>Pkts</th><th>Time</th><th></th></tr></thead>
+      <tbody id="valResults"><tr class="emptyRow"><td colspan="11">No validation points yet</td></tr></tbody>
+    </table>
+    </div>
+    <div id="valSummary" class="hint">Board est. uses the board's settings when the point was recorded. Fit est. uses the current fit from the training points.</div>
+  </section>
+
+  <section class="panel">
+    <h2>4. Path loss fit</h2>
+    <canvas id="fitChart"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--violet)"></i>training points</span>
+      <span><i style="background:var(--amber)"></i>validation points</span>
+      <span><i style="background:#fff"></i>best-fit line</span>
+      <span><i style="background:var(--green)"></i>current model</span>
+    </div>
+    <div id="fitText" class="hint">Record points at 2 or more different distances to fit n.</div>
+    <div class="controls" style="margin-top:12px">
+      <button id="applyFitBtn" disabled>Send fitted n to board</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Serial log</h2>
+    <div id="log"></div>
+    <div class="controls" style="margin-top:12px">
+      <input id="rawCmd" type="text" placeholder="Send raw command, e.g. status" style="flex:1; min-width:160px">
+      <button id="rawBtn" disabled>Send</button>
+    </div>
+  </section>
+
+  <section class="panel full">
+    <details>
+      <summary>Test procedure (quick version)</summary>
+      <ol>
+        <li>Flash board A with <code>radio_node1</code> and board B with <code>radio_node2</code>.</li>
+        <li>Plug both in. Open this page in Chrome, Connect to one board. Optional: a second tab for the other board.</li>
+        <li>Wait for the green "Link OK" banner. TX OK should climb every 3 s, packets RX every 3 s.</li>
+        <li>Place the boards exactly 1.0 m apart (same height, antennas parallel). Calibrate at 1.0.</li>
+        <li>Move to 2, 4, 6, 8, 10 m. At each, type the tape distance and Record point.</li>
+        <li>Check the fit. Send the fitted n to the board.</li>
+        <li>Turn on Validation and record new distances (e.g. 3, 5, 7, 9 m). Check their error in the Validation table.</li>
+        <li>Download CSV before closing the page.</li>
+      </ol>
+    </details>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const TX_INTERVAL_MS = 3000;     // matches firmware TX_INTERVAL
+const CAL_SAMPLES = 20;          // matches firmware CAL_SAMPLES
+const FILTER_ALPHA = 0.25;       // matches firmware FILTER_ALPHA
+const WINDOW_MS = 180000;
+const LINK_LOST_MS = 10000;
+
+let port = null, reader = null, writer = null;
+let lastLineAt = 0;
+
+// Board state, learned from the serial text
+const dev = {
+  node: null, calibrated: false, refDist: null, refRssi: null, n: null,
+  initError: null, plotMode: false,
+};
+let calibrating = false, calCount = 0, calJustDone = false;
+let pending = null;             // packet block being parsed: {rssi, snr}
+let filtered = null;            // local copy of firmware EMA
+let lastRx = null;              // {t, rssi, snr, dist}
+let lastDist = null;
+let rxCount = 0, missed = 0, lastRxAt = 0;
+let txOk = 0, txFail = 0;
+let packets = [];               // {t, rssi, filt, dist} for charts
+let point = null;               // in-progress point measurement
+let results = [];
+let recording = false, rawRows = [];
+
+// ---------- Serial ----------
+if (!('serial' in navigator)) {
+  setBanner('Web Serial not available. Use Chrome or Edge.', 'red');
+  $('connectBtn').disabled = true;
+}
+
+$('connectBtn').onclick = async () => {
+  if (port) { await disconnect(); return; }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+  } catch (e) {
+    port = null;
+    log('Connect failed: ' + e.message);
+    return;
+  }
+  const info = port.getInfo();
+  $('portInfo').textContent = 'Connected' + (info.usbVendorId ? ` (USB ${info.usbVendorId.toString(16)}:${info.usbProductId.toString(16)})` : '');
+  $('connectBtn').textContent = 'Disconnect';
+  setBanner('Connected, waiting for board...', '');
+  writer = port.writable.getWriter();
+  lastLineAt = Date.now();
+  setControls();
+  readLoop();
+  // Make sure we're in text mode, then ask for settings. Repeat after the
+  // firmware's 2 s boot delay in case opening the port reset the board.
+  send('text'); send('status');
+  setTimeout(() => { if (port) { send('text'); send('status'); } }, 2500);
+};
+
+async function disconnect() {
+  try { if (reader) await reader.cancel(); } catch {}
+  try { if (writer) writer.releaseLock(); } catch {}
+  try { await port.close(); } catch {}
+  port = reader = writer = null;
+  $('portInfo').textContent = 'Not connected';
+  $('connectBtn').textContent = 'Connect';
+  setBanner('Not connected', '');
+  setControls();
+}
+
+navigator.serial?.addEventListener('disconnect', (e) => {
+  if (port && e.target === port) { log('Device unplugged.'); disconnect(); }
+});
+
+async function readLoop() {
+  const decoder = new TextDecoderStream();
+  port.readable.pipeTo(decoder.writable).catch(() => {});
+  reader = decoder.readable.getReader();
+  let buf = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line) handleLine(line);
+      }
+    }
+  } catch (e) {
+    log('Read error: ' + e.message);
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+}
+
+async function send(cmd) {
+  if (!writer) return;
+  log('> ' + cmd);
+  await writer.write(new TextEncoder().encode(cmd + '\n'));
+}
+
+// ---------- Parsing the firmware's text output ----------
+const num = '(-?\\d+(?:\\.\\d+)?)';
+const re = (s) => new RegExp('^' + s.replace(/#/g, num));
+
+function handleLine(line) {
+  lastLineAt = Date.now();
+  let m;
+
+  if (line === 'TX OK') { txOk++; return refresh(); }
+  if (line === 'TX FAILED') { txFail++; log(line); return refresh(); }
+
+  // Packet block: "RX from node N" / "RSSI: x dBm" / "SNR: x dB" / "Distance: x m" | "Not calibrated."
+  if ((m = line.match(re('RX from node #')))) { pending = { from: +m[1] }; return; }
+  if (pending && (m = line.match(re('RSSI: # dBm')))) { pending.rssi = +m[1]; return; }
+  if (pending && (m = line.match(re('SNR: # dB')))) { pending.snr = +m[1]; return; }
+  if (pending && (m = line.match(re('Distance: # m')))) { finishPacket(+m[1]); return; }
+  if (pending && line === 'Not calibrated.') { finishPacket(null); return; }
+
+  // Calibration
+  if ((m = line.match(re('Known distance: # m')))) {
+    calibrating = true; calCount = 0; dev.calibrated = false; dev.refDist = +m[1];
+    filtered = null;
+    log(line); return refresh();
+  }
+  if ((m = line.match(re('Calibration: #/# RSSI=#')))) {
+    calibrating = true; calCount = +m[1];
+    onPacket(+m[3], null, null);
+    return refresh();
+  }
+  if (line === 'CALIBRATION COMPLETE') { calibrating = false; calJustDone = true; dev.calibrated = true; filtered = null; log(line); return refresh(); }
+  if (line === 'Invalid distance.') { calibrating = false; log(line); return refresh(); }
+
+  // Status / settings
+  if ((m = line.match(re('(?:Node|NODE ID): #')))) { dev.node = +m[1]; log(line); return refresh(); }
+  if ((m = line.match(/^Calibrated: (YES|NO)/))) { dev.calibrated = m[1] === 'YES'; log(line); return refresh(); }
+  if ((m = line.match(re('Reference distance: #')))) { dev.refDist = +m[1]; log(line); return refresh(); }
+  if ((m = line.match(re('Reference RSSI: #')))) {
+    dev.refRssi = +m[1];
+    if (calJustDone) {
+      calJustDone = false;
+      $('calBar').style.width = '0';
+      $('calText').textContent = `Done. Reference RSSI ${dev.refRssi.toFixed(1)} dBm at ${fmt(dev.refDist, 2)} m.`;
+    }
+    log(line); return refresh();
+  }
+  if ((m = line.match(re('Path loss exponent: #')))) { dev.n = +m[1]; log(line); return refresh(); }
+  if (line === 'Text mode enabled.') { dev.plotMode = false; return; }
+
+  // Plot-mode output: we lose RSSI here, so switch back to text
+  if ((m = line.match(re('Distance_m:#,Reference_m:#')))) {
+    if (!dev.plotMode) { dev.plotMode = true; log('Board is in plot mode, switching to text.'); send('text'); }
+    return;
+  }
+
+  // Fatal setup errors
+  if (/INIT FAILED|Unexpected radio chip|Frequency setup failed/.test(line)) {
+    dev.initError = line; log(line); return refresh();
+  }
+  if (line === 'LoRa radio ready.') { dev.initError = null; resetCounters(); }
+
+  log(line);
+}
+
+function finishPacket(dist) {
+  const p = pending; pending = null;
+  if (p.rssi == null) return;
+  onPacket(p.rssi, p.snr, dist);
+}
+
+function onPacket(rssi, snr, dist) {
+  const now = Date.now();
+  if (lastRxAt) {
+    const slots = Math.round((now - lastRxAt) / TX_INTERVAL_MS);
+    if (slots > 1) missed += slots - 1;
+  }
+  lastRxAt = now;
+  rxCount++;
+
+  // Same EMA as firmware (firmware skips it during calibration)
+  if (!calibrating) filtered = filtered == null ? rssi : FILTER_ALPHA * rssi + (1 - FILTER_ALPHA) * filtered;
+
+  lastRx = { t: now, rssi, snr };
+  if (dist != null) lastDist = dist;
+  packets.push({ t: now, rssi, filt: calibrating ? null : filtered, dist });
+  packets = packets.filter(p => p.t > now - WINDOW_MS);
+
+  if (point && !calibrating) addToPoint(rssi, snr, dist);
+
+  if (recording) {
+    rawRows.push([new Date(now).toISOString(), dev.node, rssi, snr, calibrating ? '' : filtered.toFixed(2), dist ?? '',
+                  dev.refDist, dev.refRssi, dev.n, $('tapeDist').value, calibrating ? 1 : 0]);
+    $('recordInfo').textContent = `${rawRows.length} rows`;
+  }
+  refresh();
+}
+
+function resetCounters() {
+  rxCount = missed = txOk = txFail = 0; lastRxAt = 0; filtered = null;
+  lastRx = null; lastDist = null; packets = [];
+  calibrating = false; dev.calibrated = false;
+}
+
+// ---------- Model ----------
+function modelDistance(rssi) {
+  if (!dev.calibrated || dev.refRssi == null || dev.refDist == null || dev.n == null) return null;
+  return dev.refDist * Math.pow(10, (dev.refRssi - rssi) / (10 * dev.n));
+}
+
+// ---------- Point measurement ----------
+$('ptBtn').onclick = () => {
+  const tape = parseFloat($('tapeDist').value);
+  const want = Math.max(3, Math.min(100, parseInt($('ptPackets').value) || 10));
+  if (!(tape > 0)) { log('Enter the tape distance first.'); $('tapeDist').focus(); return; }
+  point = { tape, want, rssi: [], snr: [], fw: [], validation: $('valToggle').checked };
+  $('ptText').textContent = `Waiting for packets, about ${Math.round(want * TX_INTERVAL_MS / 1000)} s...`;
+  $('ptBar').style.width = '0';
+  setControls();
+};
+$('valToggle').onchange = (e) => { $('ptBtn').textContent = e.target.checked ? 'Record validation point' : 'Record point'; };
+$('ptCancel').onclick = () => { point = null; $('ptBar').style.width = '0'; $('ptText').textContent = 'Cancelled.'; setControls(); };
+
+function addToPoint(rssi, snr, dist) {
+  point.rssi.push(rssi);
+  if (snr != null) point.snr.push(snr);
+  if (dist != null) point.fw.push(dist);
+  const k = point.rssi.length;
+  $('ptBar').style.width = (100 * k / point.want) + '%';
+  $('ptText').textContent = `${k}/${point.want} packets, ${Math.round((point.want - k) * TX_INTERVAL_MS / 1000)} s left`;
+  if (k < point.want) return;
+
+  const avg = mean(point.rssi);
+  const est = modelDistance(avg);
+  const r = {
+    tape: point.tape, avgRssi: avg, std: std(point.rssi), avgSnr: point.snr.length ? mean(point.snr) : null,
+    est, err: est == null ? null : est - point.tape, fw: point.fw.length ? point.fw[point.fw.length - 1] : null,
+    pkts: k, time: new Date(), refDist: dev.refDist, refRssi: dev.refRssi, n: dev.n,
+    minRssi: Math.min(...point.rssi), maxRssi: Math.max(...point.rssi), validation: point.validation,
+  };
+  results.push(r);
+  $('ptText').textContent = `Done: ${r.avgRssi.toFixed(1)} dBm avg` + (est != null ? `, est ${est.toFixed(2)} m vs tape ${r.tape.toFixed(2)} m` : ' (not calibrated)');
+  log(`${r.validation ? 'Validation' : 'Training'} point @ ${r.tape} m: RSSI ${r.avgRssi.toFixed(1)} ± ${r.std.toFixed(1)} dBm`);
+  point = null;
+  renderResults();
+  setControls();
+}
+
+function mean(a) { return a.reduce((s, v) => s + v, 0) / a.length; }
+function std(a) { const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length); }
+
+const signed = (v) => v == null ? '--' : (v >= 0 ? '+' : '') + v.toFixed(2);
+
+function fillTable(tb, rows, empty, cells) {
+  tb.innerHTML = '';
+  if (!rows.length) tb.innerHTML = `<tr class="emptyRow"><td colspan="11">${empty}</td></tr>`;
+  rows.forEach((r, k) => {
+    const tr = document.createElement('tr');
+    [k + 1, ...cells(r)].forEach(v => {
+      const td = document.createElement('td'); td.textContent = v; tr.appendChild(td);
+    });
+    const td = document.createElement('td');
+    const b = document.createElement('button'); b.textContent = 'Remove'; b.className = 'danger';
+    b.onclick = () => { results.splice(results.indexOf(r), 1); renderResults(); };
+    td.appendChild(b); tr.appendChild(td);
+    tb.appendChild(tr);
+  });
+}
+
+function renderResults() {
+  fillTable($('results'), results.filter(r => !r.validation), 'No training points yet', (r) =>
+    [r.tape.toFixed(2), r.avgRssi.toFixed(1), r.std.toFixed(1), fmt(r.avgSnr, 1),
+     fmt(r.est, 2), signed(r.err), fmt(r.fw, 2), r.pkts, r.time.toLocaleTimeString()]);
+  $('csvBtn').disabled = results.length === 0;
+  updateFit();
+  renderValidation();
+}
+
+function renderValidation() {
+  const val = results.filter(r => r.validation);
+  fillTable($('valResults'), val, 'No validation points yet', (r) => {
+    const f = fitDistance(r.avgRssi);
+    return [r.tape.toFixed(2), r.avgRssi.toFixed(1), r.std.toFixed(1), fmt(r.est, 2), signed(r.err),
+            fmt(f, 2), signed(f == null ? null : f - r.tape), r.pkts, r.time.toLocaleTimeString()];
+  });
+  const summarize = (label, errs) => {
+    if (!errs.length) return `${label}: --`;
+    const abs = errs.map(e => Math.abs(e.err)), pct = errs.map(e => 100 * Math.abs(e.err) / e.tape);
+    return `${label}: mean |error| ${mean(abs).toFixed(2)} m (${mean(pct).toFixed(0)}%), ` +
+           `RMSE ${Math.sqrt(mean(abs.map(a => a * a))).toFixed(2)} m, worst ${Math.max(...abs).toFixed(2)} m`;
+  };
+  $('valSummary').textContent = !val.length
+    ? "Board est. uses the board's settings when the point was recorded. Fit est. uses the current fit from the training points."
+    : summarize(`Board model (${val.filter(r => r.err != null).length} pts)`, val.filter(r => r.err != null).map(r => ({ err: r.err, tape: r.tape }))) +
+      '. ' + summarize('Fitted model', fit ? val.map(r => ({ err: fitDistance(r.avgRssi) - r.tape, tape: r.tape })) : []) + '.';
+}
+
+// ---------- Path loss fit: RSSI = A - 10 n log10(d) ----------
+let fit = null;
+function updateFit() {
+  fit = null;
+  const train = results.filter(r => !r.validation);
+  const xs = train.map(r => Math.log10(r.tape)), ys = train.map(r => r.avgRssi);
+  const distinct = new Set(train.map(r => r.tape)).size;
+  if (distinct >= 2) {
+    const mx = mean(xs), my = mean(ys);
+    let sxy = 0, sxx = 0, syy = 0;
+    xs.forEach((x, i) => { sxy += (x - mx) * (ys[i] - my); sxx += (x - mx) ** 2; syy += (ys[i] - my) ** 2; });
+    const slope = sxy / sxx, A = my - slope * mx;
+    const r2 = syy > 0 ? (sxy * sxy) / (sxx * syy) : 1;
+    fit = { n: -slope / 10, A, r2 };
+    const d0 = dev.refDist ?? 1;
+    const rssiAtRef = A - 10 * fit.n * Math.log10(d0);
+    let txt = `Fitted n = ${fit.n.toFixed(2)}, R² = ${r2.toFixed(3)}, fitted RSSI at ${d0} m = ${rssiAtRef.toFixed(1)} dBm`;
+    if (dev.refRssi != null) txt += ` (board has ${dev.refRssi.toFixed(1)})`;
+    if (fit.n < 1 || fit.n > 6) txt += '. Outside 1 to 6, the board will reject it. Check for bad points.';
+    $('fitText').textContent = txt;
+  } else {
+    $('fitText').textContent = 'Record training points at 2 or more different distances to fit n.';
+  }
+  setControls();
+  drawFit();
+}
+// Distance the fitted line predicts for an RSSI (x = log10(d) in meters)
+function fitDistance(rssi) { return fit ? Math.pow(10, (fit.A - rssi) / (10 * fit.n)) : null; }
+
+$('applyFitBtn').onclick = () => { if (fit) { send('n ' + fit.n.toFixed(2)); $('nInput').value = fit.n.toFixed(2); } };
+
+// ---------- Controls ----------
+$('calBtn').onclick = () => {
+  const d = parseFloat($('calDist').value);
+  if (!(d > 0)) { log('Enter a known distance > 0.'); return; }
+  point = null;
+  send('c ' + d);
+};
+$('nBtn').onclick = () => {
+  const n = parseFloat($('nInput').value);
+  if (!(n >= 1 && n <= 6)) { log('n must be between 1 and 6 (firmware ignores anything else).'); return; }
+  send('n ' + n);
+};
+$('statusBtn').onclick = () => send('status');
+$('rawBtn').onclick = () => { const v = $('rawCmd').value.trim(); if (v) { send(v); $('rawCmd').value = ''; } };
+$('rawCmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('rawBtn').click(); });
+$('tapeDist').addEventListener('input', drawCharts);
+
+function setControls() {
+  const c = !!port;
+  $('calBtn').disabled = !c || calibrating;
+  $('nBtn').disabled = !c;
+  $('statusBtn').disabled = !c;
+  $('rawBtn').disabled = !c;
+  $('ptBtn').disabled = !c || !!point || calibrating;
+  $('ptCancel').disabled = !point;
+  $('applyFitBtn').disabled = !c || !fit || !(fit.n >= 1 && fit.n <= 6);
+}
+
+// ---------- Display ----------
+function fmt(v, d) { return v == null ? '--' : Number(v).toFixed(d); }
+function setBanner(text, cls) { $('banner').textContent = text; $('banner').className = cls; }
+const peer = () => dev.node == null ? null : (dev.node === 1 ? 2 : 1);
+
+function refresh() {
+  const now = Date.now();
+  if (dev.node != null) {
+    $('title').textContent = `Radio Dashboard · Node ${dev.node}`;
+    document.title = `Node ${dev.node} · Radio`;
+  }
+  $('sNode').textContent = dev.node == null ? '--' : `${dev.node} / ${peer()}`;
+  $('sAge').textContent = lastRx ? ((now - lastRx.t) / 1000).toFixed(0) + ' s ago' : '--';
+  $('sRaw').textContent = lastRx ? `${lastRx.rssi} / ${fmt(lastRx.snr, 1)}` : '--';
+  const last20 = packets.slice(-20).map(p => p.rssi);
+  $('sSpread').textContent = last20.length >= 3 ? `±${std(last20).toFixed(1)} dB` : '--';
+  const lossPct = rxCount + missed ? 100 * missed / (rxCount + missed) : 0;
+  $('sRx').textContent = `${rxCount} / ${missed}` + (rxCount + missed > 5 ? ` (${lossPct.toFixed(0)}%)` : '');
+  $('sTx').textContent = `${txOk} / ${txFail}`;
+  $('sRef').textContent = dev.refDist != null && dev.refRssi != null ? `${dev.refRssi.toFixed(1)} @ ${dev.refDist.toFixed(2)} m` : '--';
+  $('sN').textContent = fmt(dev.n, 2);
+
+  $('rssiBig').innerHTML = `${filtered == null ? '--' : filtered.toFixed(1)}<small> dBm</small>`;
+  if (dev.calibrated && lastDist != null) {
+    $('dist').innerHTML = `${lastDist.toFixed(2)}<small> m</small>`;
+    $('distNote').textContent = `Calibrated at ${fmt(dev.refDist, 2)} m, n = ${fmt(dev.n, 2)}`;
+  } else {
+    $('dist').innerHTML = '--<small> m</small>';
+    $('distNote').textContent = calibrating ? 'Calibrating...' : (dev.calibrated ? 'Waiting for packet' : 'Not calibrated');
+  }
+
+  // Calibration progress
+  if (calibrating) {
+    $('calBar').style.width = (100 * calCount / CAL_SAMPLES) + '%';
+    $('calText').textContent = `${calCount}/${CAL_SAMPLES} packets, about ${Math.round((CAL_SAMPLES - calCount) * TX_INTERVAL_MS / 1000)} s left`;
+  }
+
+  updateBanner();
+  setControls();
+  drawCharts();
+}
+
+function updateBanner() {
+  if (!port) return;
+  const now = Date.now();
+  if (dev.initError) return setBanner(`Radio error: ${dev.initError}. Check wiring, then reset board.`, 'red');
+  if (now - lastLineAt > 5000) return setBanner('No messages from board (reset? unplugged?)', 'red');
+  if (dev.node == null) return setBanner('Connected, waiting for status...', '');
+  const p = peer();
+  if (!lastRx) return setBanner(`Waiting for packets from node ${p}. Is it powered and flashed as node ${p}?`, 'amber');
+  const age = now - lastRx.t;
+  if (age > LINK_LOST_MS) return setBanner(`Link lost: nothing from node ${p} for ${Math.round(age / 1000)} s`, 'red');
+  if (calibrating) return setBanner(`Calibrating: ${calCount}/${CAL_SAMPLES}. Keep boards still.`, 'amber');
+  setBanner(`Link OK · RSSI ${lastRx.rssi} dBm · SNR ${fmt(lastRx.snr, 1)} dB` + (dev.calibrated ? '' : ' · not calibrated'), 'green');
+}
+
+function log(msg) {
+  const el = $('log');
+  el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+  if (el.textContent.length > 60000) el.textContent = el.textContent.slice(-40000);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ---------- Charts ----------
+function prep(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.font = '12px -apple-system, sans-serif';
+  return { ctx, w, h };
+}
+
+function niceStep(span, target) {
+  const raw = span / target, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  return [1, 2, 5, 10].map(k => k * p).find(s => s >= raw);
+}
+
+// Shared frame: y grid + labels; returns mappers
+function frame(ctx, w, h, x0, x1, y0, y1, yUnit) {
+  const L = 48, R = 10, T = 10, B = 22;
+  const X = (x) => L + (x - x0) / (x1 - x0) * (w - L - R);
+  const Y = (y) => T + (1 - (y - y0) / (y1 - y0)) * (h - T - B);
+  const step = niceStep(y1 - y0, 4);
+  ctx.strokeStyle = '#222733'; ctx.fillStyle = '#8b93a7'; ctx.lineWidth = 1;
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let v = Math.ceil(y0 / step) * step; v <= y1 + 1e-9; v += step) {
+    ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w - R, Y(v)); ctx.stroke();
+    ctx.fillText(+v.toFixed(2) + (yUnit || ''), L - 6, Y(v));
+  }
+  return { X, Y, L, R, T, B };
+}
+
+function yRange(vals, minSpan) {
+  if (!vals.length) return [0, minSpan];
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < minSpan) { const c = (lo + hi) / 2; lo = c - minSpan / 2; hi = c + minSpan / 2; }
+  const pad = (hi - lo) * 0.08;
+  return [lo - pad, hi + pad];
+}
+
+function timeAxis(ctx, X, h, now) {
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#8b93a7';
+  for (let s = 0; s <= WINDOW_MS / 1000; s += 30) ctx.fillText(s === 0 ? 'now' : `-${s}s`, X(now - s * 1000), h - 6);
+}
+
+function hline(ctx, X, Y, x0, x1, y, color, dash) {
+  ctx.strokeStyle = color; ctx.setLineDash(dash || [6, 4]); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(X(x0), Y(y)); ctx.lineTo(X(x1), Y(y)); ctx.stroke(); ctx.setLineDash([]);
+}
+
+function polyline(ctx, pts, color, width) {
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+  let started = false;
+  for (const [x, y] of pts) {
+    if (y == null) { started = false; continue; }
+    started ? ctx.lineTo(x, y) : ctx.moveTo(x, y); started = true;
+  }
+  ctx.stroke();
+}
+
+function waiting(ctx, w, h, text) {
+  ctx.fillStyle = '#8b93a7'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, w / 2, h / 2);
+}
+
+function drawCharts() {
+  const now = Date.now(), t0 = now - WINDOW_MS;
+
+  // RSSI
+  {
+    const { ctx, w, h } = prep($('rssiChart'));
+    const vals = packets.flatMap(p => [p.rssi, p.filt].filter(v => v != null));
+    if (dev.refRssi != null && dev.calibrated) vals.push(dev.refRssi);
+    const [y0, y1] = yRange(vals, 10);
+    const { X, Y } = frame(ctx, w, h, t0, now, y0, y1);
+    timeAxis(ctx, X, h, now);
+    if (!packets.length) waiting(ctx, w, h, 'waiting for packets');
+    if (dev.calibrated && dev.refRssi != null) hline(ctx, X, Y, t0, now, dev.refRssi, '#30a46c');
+    ctx.fillStyle = 'rgba(76,141,255,.85)';
+    for (const p of packets) { ctx.beginPath(); ctx.arc(X(p.t), Y(p.rssi), 3, 0, Math.PI * 2); ctx.fill(); }
+    polyline(ctx, packets.map(p => [X(p.t), p.filt == null ? null : Y(p.filt)]), '#ffffff', 2);
+  }
+
+  // Distance
+  {
+    const { ctx, w, h } = prep($('distChart'));
+    const pts = packets.filter(p => p.dist != null);
+    const tape = parseFloat($('tapeDist').value);
+    const vals = pts.map(p => p.dist);
+    if (tape > 0) vals.push(tape);
+    let [y0, y1] = yRange(vals, 2);
+    y0 = Math.max(0, y0);
+    const { X, Y } = frame(ctx, w, h, t0, now, y0, y1, ' m');
+    timeAxis(ctx, X, h, now);
+    if (!pts.length) waiting(ctx, w, h, dev.calibrated ? 'waiting for packets' : 'calibrate first');
+    if (tape > 0) hline(ctx, X, Y, t0, now, tape, '#f5a524');
+    polyline(ctx, pts.map(p => [X(p.t), Y(p.dist)]), '#ffffff', 2);
+    ctx.fillStyle = '#ffffff';
+    for (const p of pts) { ctx.beginPath(); ctx.arc(X(p.t), Y(p.dist), 2.5, 0, Math.PI * 2); ctx.fill(); }
+  }
+}
+
+function drawFit() {
+  const { ctx, w, h } = prep($('fitChart'));
+  if (!results.length) { waiting(ctx, w, h, 'no points yet'); return; }
+  const ds = results.map(r => r.tape);
+  let lx0 = Math.log10(Math.min(...ds, dev.refDist ?? Infinity)), lx1 = Math.log10(Math.max(...ds, dev.refDist ?? 0));
+  if (lx1 - lx0 < 0.5) { const c = (lx0 + lx1) / 2; lx0 = c - 0.25; lx1 = c + 0.25; }
+  lx0 -= 0.08; lx1 += 0.08;
+  const model = (lx) => dev.refRssi - 10 * dev.n * (lx - Math.log10(dev.refDist));
+  const haveModel = dev.calibrated && dev.refRssi != null && dev.n != null && dev.refDist != null;
+  const vals = results.flatMap(r => [r.minRssi, r.maxRssi]);
+  if (fit) vals.push(fit.A - 10 * fit.n * lx0, fit.A - 10 * fit.n * lx1);
+  if (haveModel) vals.push(model(lx0), model(lx1));
+  const [y0, y1] = yRange(vals, 10);
+  const { X, Y } = frame(ctx, w, h, lx0, lx1, y0, y1);
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#8b93a7';
+  for (const d of [0.1, 0.2, 0.5, 1, 2, 3, 5, 10, 20, 30, 50, 100, 200]) {
+    const lx = Math.log10(d);
+    if (lx >= lx0 && lx <= lx1) ctx.fillText(d + ' m', X(lx), h - 6);
+  }
+  if (haveModel) polyline(ctx, [[X(lx0), Y(model(lx0))], [X(lx1), Y(model(lx1))]], '#30a46c', 1.5);
+  if (fit) polyline(ctx, [[X(lx0), Y(fit.A - 10 * fit.n * lx0)], [X(lx1), Y(fit.A - 10 * fit.n * lx1)]], '#ffffff', 2);
+  for (const r of results) {
+    const x = X(Math.log10(r.tape));
+    ctx.strokeStyle = r.validation ? 'rgba(245,165,36,.6)' : 'rgba(180,140,255,.6)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, Y(r.minRssi)); ctx.lineTo(x, Y(r.maxRssi)); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, Y(r.avgRssi), 5, 0, Math.PI * 2);
+    if (r.validation) { ctx.fillStyle = '#0b0d11'; ctx.fill(); ctx.strokeStyle = '#f5a524'; ctx.stroke(); }
+    else { ctx.fillStyle = '#b48cff'; ctx.fill(); }
+  }
+}
+
+// ---------- CSV ----------
+function downloadCSV(name, header, rows) {
+  const esc = (v) => v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+  const text = [header, ...rows].map(r => r.map(esc).join(',')).join('\n') + '\n';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+
+$('csvBtn').onclick = () => downloadCSV(`radio-points-node${dev.node ?? 'x'}-${stamp()}.csv`,
+  ['n', 'set', 'tape_m', 'avg_rssi_dbm', 'std_rssi_db', 'min_rssi', 'max_rssi', 'avg_snr_db', 'est_m', 'error_m', 'firmware_m',
+   'fit_est_m', 'fit_error_m', 'packets', 'ref_dist_m', 'ref_rssi_dbm', 'path_loss_n', 'fit_n', 'fit_A_dbm', 'time'],
+  results.map((r, i) => {
+    const f = fitDistance(r.avgRssi);
+    return [i + 1, r.validation ? 'validation' : 'training', r.tape, r.avgRssi.toFixed(2), r.std.toFixed(2), r.minRssi, r.maxRssi,
+      r.avgSnr?.toFixed(2), r.est?.toFixed(3), r.err?.toFixed(3), r.fw, f?.toFixed(3), f == null ? null : (f - r.tape).toFixed(3),
+      r.pkts, r.refDist, r.refRssi, r.n, fit?.n.toFixed(3), fit?.A.toFixed(2), r.time.toISOString()];
+  }));
+
+$('recordToggle').onchange = (e) => {
+  recording = e.target.checked;
+  if (recording) {
+    rawRows = [];
+    $('recordInfo').textContent = '0 rows';
+  } else if (rawRows.length) {
+    downloadCSV(`radio-raw-node${dev.node ?? 'x'}-${stamp()}.csv`,
+      ['pc_time', 'node', 'rssi_dbm', 'snr_db', 'filtered_rssi', 'firmware_dist_m', 'ref_dist_m', 'ref_rssi_dbm', 'path_loss_n', 'tape_m', 'calibrating'],
+      rawRows);
+    $('recordInfo').textContent = `Saved ${rawRows.length} rows`;
+  }
+};
+
+window.addEventListener('beforeunload', (e) => { if (results.length || rawRows.length) e.preventDefault(); });
+window.addEventListener('resize', () => { drawCharts(); drawFit(); });
+setInterval(refresh, 1000);
+refresh(); drawFit();
+</script>
+</body>
+</html>
