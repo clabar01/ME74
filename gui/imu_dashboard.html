@@ -147,24 +147,17 @@
     <h2>Distance walked <span id="walkState" class="pill" style="text-transform:none;letter-spacing:0;margin-left:6px">--</span></h2>
     <div class="walk-top">
       <div>
-        <div class="label">STEP METHOD</div>
-        <div class="big" id="wStepDist">--</div>
-        <div class="sub" id="wStepSub">steps × step length</div>
-      </div>
-      <div>
         <div class="label">INTEGRATION METHOD</div>
         <div class="big" id="wIntDist">--</div>
         <div class="sub" id="wIntSub">corrected when you press Stop walk</div>
       </div>
       <div class="walk-controls">
-        <label>Step length <input id="inStepLen" type="number" step="0.01" min="0.2" max="1.5"> m</label>
         <label>Measured distance of last walk <input id="inActual" type="number" step="0.01" min="0"> m</label>
         <div class="row">
           <button id="btnWalk" class="primary" disabled>Start walk</button>
         </div>
         <div class="row">
           <button id="btnSaveActual">Save measured distance</button>
-          <button id="btnStepFromActual" title="Step length = measured distance / steps of the last walk">Set step length from it</button>
         </div>
         <div class="row">
           <button id="btnWalkCopy">Copy table</button>
@@ -173,16 +166,16 @@
       </div>
     </div>
     <table>
-      <thead><tr><th>Walk</th><th>Duration</th><th>Steps</th><th>Step method</th><th>Integration</th><th>Measured</th></tr></thead>
-      <tbody id="walkRows"><tr><td colspan="6" style="text-align:left;color:var(--muted)">No walks yet</td></tr></tbody>
+      <thead><tr><th>Walk</th><th>Duration</th><th>Integration</th><th>Measured</th></tr></thead>
+      <tbody id="walkRows"><tr><td colspan="4" style="text-align:left;color:var(--muted)">No walks yet</td></tr></tbody>
     </table>
     <div class="note">
       How to record a walk: hold the bin still → press <b>Start walk</b> → walk → stop and hold it still →
       press <b>Stop walk</b>. The integration method assumes the bin is not moving at both button presses.
-      Both methods are a first prototype: check them against tape-measured walks before trusting the numbers.<br>
+      This is a first prototype: check it against tape-measured walks before trusting the numbers.<br>
       To save everything: press <b>Start logging</b>, do all your walks (enter each measured distance), then
       <b>Stop logging</b>. You get one CSV with the sensor data and each walk's results (rows where
-      <code>walk_steps</code> is filled in).
+      <code>integration_m</code> is filled in).
     </div>
   </section>
 
@@ -242,9 +235,8 @@ const DEG = 180 / Math.PI;
 // Sensor columns match tools/imu_still_test.py; the walk columns come after
 const CSV_COLUMNS = ["t_s", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
                      "roll_deg", "pitch_deg", "heading_deg", "dt_ms", "overruns",
-                     "walk_state", "walk_n", "steps_so_far",
-                     "walk_duration_s", "walk_steps", "step_length_m", "step_method_m",
-                     "integration_m", "measured_m"];
+                     "walk_state", "walk_n",
+                     "walk_duration_s", "integration_m", "measured_m"];
 
 const $ = (id) => document.getElementById(id);
 
@@ -387,8 +379,7 @@ function handleSample(s) {
     // typed in later are included).
     const walkN = walk ? walks.length + 1 : (finished ? finished.n : "");
     logRows.push({
-      text: [(s.t - logT0).toFixed(4), ...s.raw, walkState, walkN,
-             walk ? walk.steps.length : (finished ? finished.steps : "")].join(","),
+      text: [(s.t - logT0).toFixed(4), ...s.raw, walkState, walkN].join(","),
       walkResult: finished,
     });
   }
@@ -502,9 +493,8 @@ function stopLogging() {
   const lines = logRows.map((r) => {
     const w = r.walkResult;
     const result = w
-      ? [w.duration.toFixed(2), w.steps, stepLength.toFixed(3), (w.steps * stepLength).toFixed(2),
-         w.intDist.toFixed(2), w.actual === null ? "" : w.actual]
-      : ["", "", "", "", "", ""];
+      ? [w.duration.toFixed(2), w.intDist.toFixed(2), w.actual === null ? "" : w.actual]
+      : ["", "", ""];
     return r.text + "," + result.join(",");
   });
   const csv = CSV_COLUMNS.join(",") + "\n" + lines.join("\n") + "\n";
@@ -580,19 +570,19 @@ function demoCommand(ch) {
 
 // ============================================================================
 // Distance walked (prototype)
-//   Step method:        count the bin's up-down bounces x step length
 //   Integration method: integrate horizontal acceleration twice while the bin
 //                       moves. The bin must end at zero speed, so any speed
 //                       left at the end is drift; removing it (assuming it grew
 //                       steadily) gives: distance = p_end - v_end * T / 2
+//   Orientation during a walk: the board's roll/pitch are nudged toward the
+//   accelerometer's "down", so a steady forward push slowly tilts them and the
+//   push gets counted as vertical instead of horizontal (this made walks read
+//   about half their real length). So the walk takes the board's orientation
+//   once at Start (bin still, angles good) and then follows it with the gyro only.
 // ============================================================================
 const WALK = {
   MOVE_GYRO: 0.25,       // rad/s (~14 deg/s): rotating faster than this = moving
   MOVE_ACCEL: 0.6,       // m/s^2: |accel| further than this from 1 g = moving
-  STEP_THRESHOLD: 0.8,   // m/s^2: upward bounce needed to count a step
-  STEP_MIN_GAP: 0.35,    // s: minimum time between steps
-  EDGE_IGNORE: 0.5,      // s: ignore bounces just after pick-up and before set-down
-  SMOOTH_N: 7,           // samples averaged to smooth the bounce signal
 };
 const GRAVITY = 9.80665;
 
@@ -603,8 +593,6 @@ let walkState = "idle";      // idle <-> moving
 let walkRequest = null;      // "start" or "stop", handled on the next sample
 let walk = null;             // the walk in progress
 let walks = [];              // finished walks
-let stepLength = 0.55;
-try { stepLength = parseFloat(localStorage.getItem("imuStepLength")) || 0.55; } catch (e) {}
 
 // Rotation matrix from sensor axes to world axes (x = north, y = west, z = up),
 // using the same roll/pitch/yaw convention as the firmware.
@@ -618,8 +606,22 @@ function rotMatrix(rollDeg, pitchDeg, headingDeg) {
 }
 
 // Acceleration in world axes with gravity removed (m/s^2)
-function worldAccel(s) {
-  const R = rotMatrix(s.roll, s.pitch, s.yaw);
+// Matrix product A * B (3x3)
+function matMul(A, B) {
+  return A.map((row) => [0, 1, 2].map((j) => row[0] * B[0][j] + row[1] * B[1][j] + row[2] * B[2][j]));
+}
+
+// Rotation over one time step from body rates w (rad/s), Rodrigues' formula
+function gyroStep(w, dt) {
+  const K = [[0, -w[2] * dt, w[1] * dt], [w[2] * dt, 0, -w[0] * dt], [-w[1] * dt, w[0] * dt, 0]];
+  const th = Math.hypot(w[0], w[1], w[2]) * dt;
+  const c1 = th < 1e-9 ? 1 : Math.sin(th) / th;
+  const c2 = th < 1e-9 ? 0.5 : (1 - Math.cos(th)) / (th * th);
+  const K2 = matMul(K, K);
+  return K.map((row, i) => row.map((k, j) => (i === j ? 1 : 0) + c1 * k + c2 * K2[i][j]));
+}
+
+function worldAccel(s, R) {
   const a = [s.ax, s.ay, s.az];
   const w = R.map((row) => row[0] * a[0] + row[1] * a[1] + row[2] * a[2]);
   return { x: w[0], y: w[1], z: w[2] - GRAVITY };
@@ -639,11 +641,15 @@ function updateWalk(s) {
     if (request !== "start") return null;
     walkState = "moving";
     walk = { startT: s.t, lastMoveT: s.t, lastT: null, aPrev: null,
-             v: { x: 0, y: 0 }, p: { x: 0, y: 0 }, bounce: [], smooth: [], steps: [] };
+             v: { x: 0, y: 0 }, p: { x: 0, y: 0 }, R: rotMatrix(s.roll, s.pitch, s.yaw) };
   }
 
-  // --- moving: integrate horizontal acceleration ---
-  const a = worldAccel(s);
+  // --- moving: follow the orientation with the gyro, integrate horizontal acceleration ---
+  if (walk.lastT !== null) {
+    const dt = s.t - walk.lastT;
+    if (dt > 0 && dt < 0.2) walk.R = matMul(walk.R, gyroStep([s.gx, s.gy, s.gz], dt));
+  }
+  const a = worldAccel(s, walk.R);
   if (walk.lastT !== null) {
     const dt = s.t - walk.lastT;
     if (dt > 0 && dt < 0.2) {
@@ -657,24 +663,6 @@ function updateWalk(s) {
   walk.aPrev = a; walk.lastT = s.t;
   if (moving) walk.lastMoveT = s.t;
 
-  // --- steps: peaks in the smoothed up-down acceleration ---
-  walk.bounce.push({ t: s.t, z: a.z });
-  if (walk.bounce.length > WALK.SMOOTH_N) walk.bounce.shift();
-  if (walk.bounce.length === WALK.SMOOTH_N) {
-    const mid = walk.bounce[Math.floor(WALK.SMOOTH_N / 2)];
-    walk.smooth.push({ t: mid.t, v: mean(walk.bounce.map((b) => b.z)) });
-    if (walk.smooth.length > 3) walk.smooth.shift();
-    if (walk.smooth.length === 3) {
-      const [p0, p1, p2] = walk.smooth;
-      const last = walk.steps[walk.steps.length - 1];
-      if (p1.v > WALK.STEP_THRESHOLD && p1.v >= p0.v && p1.v > p2.v &&
-          p1.t - walk.startT > WALK.EDGE_IGNORE &&
-          (last === undefined || p1.t - last >= WALK.STEP_MIN_GAP)) {
-        walk.steps.push(p1.t);
-      }
-    }
-  }
-
   if (request === "stop") return finishWalk(s);
   return null;
 }
@@ -683,15 +671,13 @@ function finishWalk(s) {
   const T = s.t - walk.startT;
   const px = walk.p.x - walk.v.x * T / 2;
   const py = walk.p.y - walk.v.y * T / 2;
-  const steps = walk.steps.filter((t) => t < walk.lastMoveT - WALK.EDGE_IGNORE).length;
   const intDist = Math.hypot(px, py);
   walkState = "idle";
   const w = walk;
   walk = null;
-  const record = { n: walks.length + 1, duration: w.lastMoveT - w.startT, steps, intDist, actual: null };
+  const record = { n: walks.length + 1, duration: w.lastMoveT - w.startT, intDist, actual: null };
   walks.push(record);
-  addMessage(`Walk ${walks.length}: ${steps} steps (${(steps * stepLength).toFixed(2)} m), ` +
-             `integration ${intDist.toFixed(2)} m`);
+  addMessage(`Walk ${walks.length}: integration ${intDist.toFixed(2)} m`);
   renderWalkTable();
   return record;
 }
@@ -705,13 +691,11 @@ function fmtErr(est, actual) {
 function renderWalkTable() {
   const body = $("walkRows");
   if (!walks.length) {
-    body.innerHTML = `<tr><td colspan="6" style="text-align:left;color:var(--muted)">No walks yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="4" style="text-align:left;color:var(--muted)">No walks yet</td></tr>`;
     return;
   }
   body.innerHTML = walks.slice().reverse().map((w) => {
-    const sd = w.steps * stepLength;
-    return `<tr><td>${w.n}</td><td>${w.duration.toFixed(1)} s</td><td>${w.steps}</td>` +
-           `<td>${sd.toFixed(2)} m${fmtErr(sd, w.actual)}</td>` +
+    return `<tr><td>${w.n}</td><td>${w.duration.toFixed(1)} s</td>` +
            `<td>${w.intDist.toFixed(2)} m${fmtErr(w.intDist, w.actual)}</td>` +
            `<td>${w.actual === null ? "--" : w.actual.toFixed(2) + " m"}</td></tr>`;
   }).join("");
@@ -729,20 +713,14 @@ function updateWalkPanel() {
   $("btnWalk").className = walk ? "recording" : "primary";
 
   if (walk) {
-    const steps = walk.steps.length;
-    $("wStepDist").textContent = (steps * stepLength).toFixed(2) + " m";
-    $("wStepSub").textContent = `${steps} steps so far`;
     $("wIntDist").textContent = Math.hypot(walk.p.x, walk.p.y).toFixed(2) + " m";
     $("wIntSub").textContent = "live, uncorrected until you press Stop walk";
   } else if (walks.length) {
     const w = walks[walks.length - 1];
-    $("wStepDist").textContent = (w.steps * stepLength).toFixed(2) + " m";
-    $("wStepSub").textContent = `last walk: ${w.steps} steps × ${stepLength.toFixed(2)} m`;
     $("wIntDist").textContent = w.intDist.toFixed(2) + " m";
     $("wIntSub").textContent = "last walk, corrected";
   } else {
-    $("wStepDist").textContent = "--"; $("wIntDist").textContent = "--";
-    $("wStepSub").textContent = "steps × step length";
+    $("wIntDist").textContent = "--";
     $("wIntSub").textContent = "corrected when you press Stop walk";
   }
 }
@@ -971,37 +949,18 @@ $("btnDemo").onclick = startDemo;
 $("btnCal").onclick = () => send("0");
 $("btnResetDrift").onclick = () => { resetDrift(); addMessage("Drift reset."); };
 $("btnLog").onclick = () => (logging ? stopLogging() : startLogging());
-$("inStepLen").value = stepLength.toFixed(2);
-$("inStepLen").onchange = () => {
-  const v = parseFloat($("inStepLen").value);
-  if (v > 0) {
-    stepLength = v;
-    try { localStorage.setItem("imuStepLength", String(v)); } catch (e) {}
-    renderWalkTable();
-  }
-};
 $("btnSaveActual").onclick = () => {
   const v = parseFloat($("inActual").value);
   if (!walks.length || !(v > 0)) { addMessage("Do a walk and type its measured distance first."); return; }
   walks[walks.length - 1].actual = v;
   renderWalkTable();
 };
-$("btnStepFromActual").onclick = () => {
-  const w = walks[walks.length - 1];
-  const v = parseFloat($("inActual").value);
-  if (!w || !(v > 0) || !w.steps) { addMessage("Need a last walk with steps and its measured distance."); return; }
-  w.actual = v;
-  $("inStepLen").value = (v / w.steps).toFixed(3);
-  $("inStepLen").onchange();
-  addMessage(`Step length set to ${(v / w.steps).toFixed(3)} m (${v} m / ${w.steps} steps).`);
-};
 $("btnWalk").onclick = () => { walkRequest = walk ? "stop" : "start"; };
 $("btnWalkClear").onclick = () => { walks = []; renderWalkTable(); };
 $("btnWalkCopy").onclick = async () => {
-  const lines = ["walk\tduration_s\tsteps\tstep_length_m\tstep_method_m\tintegration_m\tmeasured_m"];
+  const lines = ["walk\tduration_s\tintegration_m\tmeasured_m"];
   for (const w of walks) {
-    lines.push([w.n, w.duration.toFixed(2), w.steps, stepLength.toFixed(3), (w.steps * stepLength).toFixed(2),
-                w.intDist.toFixed(2), w.actual === null ? "" : w.actual].join("\t"));
+    lines.push([w.n, w.duration.toFixed(2), w.intDist.toFixed(2), w.actual === null ? "" : w.actual].join("\t"));
   }
   try { await navigator.clipboard.writeText(lines.join("\n")); addMessage("Walk table copied (paste into Excel/Sheets)."); }
   catch (e) { addMessage("Could not copy: " + e.message); }
