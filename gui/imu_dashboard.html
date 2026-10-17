@@ -11,6 +11,8 @@
     - Sends 'l' to the board so it prints CSV lines: LOG,t_us,ax,ay,az,gx,gy,gz,
       mx,my,mz,roll,pitch,heading,dt_ms,overruns  (50 per second)
     - Calibrate button sends '0' (the sketch's recalibration command)
+    - The Acceleration panel shows total acceleration and the acceleration with
+      gravity removed (split into horizontal and vertical), with peak values.
     - Logging keeps rows in memory and downloads a CSV when you press Stop.
       The CSV has the same columns as tools/imu_still_test.py, so
       "python tools/imu_still_test.py stats <file>" works on it.
@@ -81,14 +83,15 @@
   .chart { grid-column: span 6; }
   .chart canvas { width: 100%; height: 220px; display: block; }
   .messages { grid-column: span 12; }
-  .walk { grid-column: span 12; }
-  .walk-top { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; margin-bottom: 12px; }
-  .walk-top .big { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .walk-top .label { color: var(--muted); font-size: 12px; font-weight: 600; }
-  .walk-top .sub { color: var(--muted); font-size: 12px; }
-  .walk-controls { display: grid; gap: 8px; margin-left: auto; }
-  .walk-controls label { display: flex; align-items: center; gap: 8px; justify-content: flex-end; color: var(--muted); }
-  .walk-controls .row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  :root { --h: #d9822b; --v: #8b5cf6; --t: #0ea5a4; }
+  @media (prefers-color-scheme: dark) { :root { --h: #f0a050; --v: #a78bfa; --t: #2dd4bf; } }
+  .accel { grid-column: span 12; }
+  .accel-top { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; margin-bottom: 12px; }
+  .accel-top .big { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .accel-top .label { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .accel-top .sub { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .accel-top .actions { margin-left: auto; display: flex; gap: 8px; }
+  .accel canvas { width: 100%; height: 200px; display: block; }
   input[type=number] {
     font: inherit; width: 80px; padding: 5px 8px; border-radius: 8px;
     border: 1px solid var(--border); background: var(--bg); color: var(--text);
@@ -143,39 +146,21 @@
     <div><h2>Yaw (heading)</h2><div class="value" id="vYaw">--</div><div class="sub">clockwise from north</div></div>
   </section>
 
-  <section class="card walk">
-    <h2>Distance walked <span id="walkState" class="pill" style="text-transform:none;letter-spacing:0;margin-left:6px">--</span></h2>
-    <div class="walk-top">
-      <div>
-        <div class="label">INTEGRATION METHOD</div>
-        <div class="big" id="wIntDist">--</div>
-        <div class="sub" id="wIntSub">corrected when you press Stop walk</div>
-      </div>
-      <div class="walk-controls">
-        <label>Measured distance of last walk <input id="inActual" type="number" step="0.01" min="0"> m</label>
-        <div class="row">
-          <button id="btnWalk" class="primary" disabled>Start walk</button>
-        </div>
-        <div class="row">
-          <button id="btnSaveActual">Save measured distance</button>
-        </div>
-        <div class="row">
-          <button id="btnWalkCopy">Copy table</button>
-          <button id="btnWalkClear">Clear walks</button>
-        </div>
-      </div>
+  <section class="card accel">
+    <h2>Acceleration</h2>
+    <div class="accel-top">
+      <div><div class="label">TOTAL |a|</div><div class="big" id="aTotal">--</div><div class="sub" id="aTotalG">--</div></div>
+      <div><div class="label">GRAVITY REMOVED</div><div class="big" id="aLin">--</div><div class="sub" id="aLinPeak">peak --</div></div>
+      <div><div class="label">HORIZONTAL</div><div class="big" id="aHor">--</div><div class="sub" id="aHorPeak">peak --</div></div>
+      <div><div class="label">VERTICAL</div><div class="big" id="aVer">--</div><div class="sub" id="aVerPeak">peak --</div></div>
+      <div class="actions"><button id="btnResetPeaks">Reset peaks</button></div>
     </div>
-    <table>
-      <thead><tr><th>Walk</th><th>Duration</th><th>Integration</th><th>Measured</th></tr></thead>
-      <tbody id="walkRows"><tr><td colspan="4" style="text-align:left;color:var(--muted)">No walks yet</td></tr></tbody>
-    </table>
+    <div class="legend" id="legLin"></div>
+    <canvas id="chartLin"></canvas>
     <div class="note">
-      How to record a walk: hold the bin still → press <b>Start walk</b> → walk → stop and hold it still →
-      press <b>Stop walk</b>. The integration method assumes the bin is not moving at both button presses.
-      This is a first prototype: check it against tape-measured walks before trusting the numbers.<br>
-      To save everything: press <b>Start logging</b>, do all your walks (enter each measured distance), then
-      <b>Stop logging</b>. You get one CSV with the sensor data and each walk's results (rows where
-      <code>integration_m</code> is filled in).
+      Total |a| is what the accelerometer measures (about 9.81 m/s² = 1 g when still). "Gravity removed" uses the
+      roll and pitch estimate to subtract gravity, leaving only the acceleration from motion, split into horizontal
+      and vertical parts. All values are in m/s².
     </div>
   </section>
 
@@ -232,11 +217,10 @@ const WINDOW_S = 10;        // seconds of data shown in the graphs
 const AVG_N = 50;           // samples averaged for drift start/now values (1 s at 50 Hz)
 const DEG = 180 / Math.PI;
 // Same columns as tools/imu_still_test.py
-// Sensor columns match tools/imu_still_test.py; the walk columns come after
+// Sensor columns match tools/imu_still_test.py; the acceleration columns come after
 const CSV_COLUMNS = ["t_s", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
                      "roll_deg", "pitch_deg", "heading_deg", "dt_ms", "overruns",
-                     "walk_state", "walk_n",
-                     "walk_duration_s", "integration_m", "measured_m"];
+                     "accel_total", "lin_total", "lin_horizontal", "lin_vertical"];
 
 const $ = (id) => document.getElementById(id);
 
@@ -288,7 +272,7 @@ function resetDrift() {
 
 function resetAll() {
   samples = []; latest = null; lastRawUs = null; wrapOffsetUs = 0;
-  rateTimes = []; resetDrift(); resetWalkDetection();
+  rateTimes = []; resetDrift(); resetPeaks();
 }
 
 // ============================================================================
@@ -304,9 +288,9 @@ function handleLine(line) {
   }
   // Anything else is a status message from the sketch
   addMessage(line);
-  if (line.includes("Calibrating")) { calibrating = true; resetWalkDetection(); updateStatus(); }
+  if (line.includes("Calibrating")) { calibrating = true; updateStatus(); }
   if (line.includes("Calibration done")) {
-    calibrating = false; resetDrift(); resetWalkDetection(); updateStatus();
+    calibrating = false; resetDrift(); resetPeaks(); updateStatus();
     send("l");   // make sure logging mode is on (e.g. after the board restarted)
   }
   if (line.startsWith("Accel X:") && !oldFirmwareWarned) {
@@ -370,18 +354,12 @@ function handleSample(s) {
   recent.push(s);
   if (recent.length > AVG_N) recent.shift();
 
-  const finished = updateWalk(s);   // the walk record if a walk ended on this sample
+  addLinear(s);   // gravity-removed acceleration + peaks
 
   if (logging) {
     if (logT0 === null) logT0 = s.t;
-    // Sensor data + where we are in the walk. The walk results are added to the
-    // row where the walk ended when the file is saved (so measured distances
-    // typed in later are included).
-    const walkN = walk ? walks.length + 1 : (finished ? finished.n : "");
-    logRows.push({
-      text: [(s.t - logT0).toFixed(4), ...s.raw, walkState, walkN].join(","),
-      walkResult: finished,
-    });
+    logRows.push([(s.t - logT0).toFixed(4), ...s.raw,
+                  s.at.toFixed(4), s.lt.toFixed(4), s.lh.toFixed(4), s.lv.toFixed(4)].join(","));
   }
 
   latest = s;
@@ -490,14 +468,7 @@ function stopLogging() {
   logging = false;
   updateStatus();
   if (!logRows.length) { addMessage("Logging stopped (no data recorded)."); return; }
-  const lines = logRows.map((r) => {
-    const w = r.walkResult;
-    const result = w
-      ? [w.duration.toFixed(2), w.intDist.toFixed(2), w.actual === null ? "" : w.actual]
-      : ["", "", ""];
-    return r.text + "," + result.join(",");
-  });
-  const csv = CSV_COLUMNS.join(",") + "\n" + lines.join("\n") + "\n";
+  const csv = CSV_COLUMNS.join(",") + "\n" + logRows.join("\n") + "\n";
   const d = new Date();
   const pad = (x) => String(x).padStart(2, "0");
   const name = `imu_log_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
@@ -534,11 +505,11 @@ function demoTick() {
   if (performance.now() < demo.pausedUntil) return;   // "calibrating"
   demo.t += 0.02;
   const t = demo.t;
-  // Repeating cycle: still 5 s, carry the bin 5 m in 5 s, still 4 s
-  const T = 5, tau = (t % 14) - 5, walking = tau >= 0 && tau < T;
+  // Repeating cycle: still 5 s, move for 5 s, still 4 s
+  const T = 5, tau = (t % 14) - 5, moving = tau >= 0 && tau < T;
   let roll = 1.5, pitch = -2.0, rollRate = 0, pitchRate = 0, aFwd = 0, aUp = 0;
   const yaw = 137;
-  if (walking) {
+  if (moving) {
     const w1 = 2 * Math.PI * 0.9, w2 = 2 * Math.PI * 1.8;     // bin rocking, steps at 1.8 per s
     roll += 4 * Math.sin(w1 * tau);  rollRate = 4 * w1 * Math.cos(w1 * tau);
     pitch += 3 * Math.sin(w2 * tau); pitchRate = 3 * w2 * Math.cos(w2 * tau);
@@ -569,30 +540,16 @@ function demoCommand(ch) {
 }
 
 // ============================================================================
-// Distance walked (prototype)
-//   Integration method: integrate horizontal acceleration twice while the bin
-//                       moves. The bin must end at zero speed, so any speed
-//                       left at the end is drift; removing it (assuming it grew
-//                       steadily) gives: distance = p_end - v_end * T / 2
-//   Orientation during a walk: the board's roll/pitch are nudged toward the
-//   accelerometer's "down", so a steady forward push slowly tilts them and the
-//   push gets counted as vertical instead of horizontal (this made walks read
-//   about half their real length). So the walk takes the board's orientation
-//   once at Start (bin still, angles good) and then follows it with the gyro only.
+// Acceleration
+//   Total:   length of the measured acceleration vector (1 g when still).
+//   Linear:  rotate the reading into world axes using roll/pitch/heading and
+//            subtract gravity, leaving only the acceleration from motion.
+//            Split into horizontal (along the ground) and vertical parts.
 // ============================================================================
-const WALK = {
-  MOVE_GYRO: 0.25,       // rad/s (~14 deg/s): rotating faster than this = moving
-  MOVE_ACCEL: 0.6,       // m/s^2: |accel| further than this from 1 g = moving
-};
 const GRAVITY = 9.80665;
+let peaks = { lt: 0, lh: 0, lv: 0 };
 
-// Walks are started and stopped with the Start/Stop walk button.
-// The button only sets a request; the next sample acts on it, so the CSV row
-// where a walk ends is the one that gets its results.
-let walkState = "idle";      // idle <-> moving
-let walkRequest = null;      // "start" or "stop", handled on the next sample
-let walk = null;             // the walk in progress
-let walks = [];              // finished walks
+function resetPeaks() { peaks = { lt: 0, lh: 0, lv: 0 }; dirty = true; }
 
 // Rotation matrix from sensor axes to world axes (x = north, y = west, z = up),
 // using the same roll/pitch/yaw convention as the firmware.
@@ -605,124 +562,32 @@ function rotMatrix(rollDeg, pitchDeg, headingDeg) {
           [-st, ct * sf, ct * cf]];
 }
 
-// Acceleration in world axes with gravity removed (m/s^2)
-// Matrix product A * B (3x3)
-function matMul(A, B) {
-  return A.map((row) => [0, 1, 2].map((j) => row[0] * B[0][j] + row[1] * B[1][j] + row[2] * B[2][j]));
-}
-
-// Rotation over one time step from body rates w (rad/s), Rodrigues' formula
-function gyroStep(w, dt) {
-  const K = [[0, -w[2] * dt, w[1] * dt], [w[2] * dt, 0, -w[0] * dt], [-w[1] * dt, w[0] * dt, 0]];
-  const th = Math.hypot(w[0], w[1], w[2]) * dt;
-  const c1 = th < 1e-9 ? 1 : Math.sin(th) / th;
-  const c2 = th < 1e-9 ? 0.5 : (1 - Math.cos(th)) / (th * th);
-  const K2 = matMul(K, K);
-  return K.map((row, i) => row.map((k, j) => (i === j ? 1 : 0) + c1 * k + c2 * K2[i][j]));
-}
-
-function worldAccel(s, R) {
+function addLinear(s) {
+  const R = rotMatrix(s.roll, s.pitch, s.yaw);
   const a = [s.ax, s.ay, s.az];
   const w = R.map((row) => row[0] * a[0] + row[1] * a[1] + row[2] * a[2]);
-  return { x: w[0], y: w[1], z: w[2] - GRAVITY };
-}
-
-function resetWalkDetection() {
-  walkState = "idle"; walkRequest = null; walk = null;
-}
-
-function updateWalk(s) {
-  const moving = Math.hypot(s.gx, s.gy, s.gz) > WALK.MOVE_GYRO ||
-                 Math.abs(Math.hypot(s.ax, s.ay, s.az) - GRAVITY) > WALK.MOVE_ACCEL;
-  const request = walkRequest;
-  walkRequest = null;
-
-  if (walkState === "idle") {
-    if (request !== "start") return null;
-    walkState = "moving";
-    walk = { startT: s.t, lastMoveT: s.t, lastT: null, aPrev: null,
-             v: { x: 0, y: 0 }, p: { x: 0, y: 0 }, R: rotMatrix(s.roll, s.pitch, s.yaw) };
+  s.at = Math.hypot(s.ax, s.ay, s.az);
+  s.lh = Math.hypot(w[0], w[1]);
+  s.lv = w[2] - GRAVITY;                 // + up, - down
+  s.lt = Math.hypot(w[0], w[1], s.lv);
+  if (!calibrating) {
+    peaks.lt = Math.max(peaks.lt, s.lt);
+    peaks.lh = Math.max(peaks.lh, s.lh);
+    peaks.lv = Math.max(peaks.lv, Math.abs(s.lv));
   }
-
-  // --- moving: follow the orientation with the gyro, integrate horizontal acceleration ---
-  if (walk.lastT !== null) {
-    const dt = s.t - walk.lastT;
-    if (dt > 0 && dt < 0.2) walk.R = matMul(walk.R, gyroStep([s.gx, s.gy, s.gz], dt));
-  }
-  const a = worldAccel(s, walk.R);
-  if (walk.lastT !== null) {
-    const dt = s.t - walk.lastT;
-    if (dt > 0 && dt < 0.2) {
-      const vx0 = walk.v.x, vy0 = walk.v.y;
-      walk.v.x += 0.5 * (a.x + walk.aPrev.x) * dt;   // trapezoid rule
-      walk.v.y += 0.5 * (a.y + walk.aPrev.y) * dt;
-      walk.p.x += 0.5 * (vx0 + walk.v.x) * dt;
-      walk.p.y += 0.5 * (vy0 + walk.v.y) * dt;
-    }
-  }
-  walk.aPrev = a; walk.lastT = s.t;
-  if (moving) walk.lastMoveT = s.t;
-
-  if (request === "stop") return finishWalk(s);
-  return null;
 }
 
-function finishWalk(s) {
-  const T = s.t - walk.startT;
-  const px = walk.p.x - walk.v.x * T / 2;
-  const py = walk.p.y - walk.v.y * T / 2;
-  const intDist = Math.hypot(px, py);
-  walkState = "idle";
-  const w = walk;
-  walk = null;
-  const record = { n: walks.length + 1, duration: w.lastMoveT - w.startT, intDist, actual: null };
-  walks.push(record);
-  addMessage(`Walk ${walks.length}: integration ${intDist.toFixed(2)} m`);
-  renderWalkTable();
-  return record;
-}
-
-function fmtErr(est, actual) {
-  if (actual === null) return "";
-  const e = est - actual;
-  return ` <span class="err">(${e >= 0 ? "+" : ""}${e.toFixed(2)})</span>`;
-}
-
-function renderWalkTable() {
-  const body = $("walkRows");
-  if (!walks.length) {
-    body.innerHTML = `<tr><td colspan="4" style="text-align:left;color:var(--muted)">No walks yet</td></tr>`;
-    return;
-  }
-  body.innerHTML = walks.slice().reverse().map((w) => {
-    return `<tr><td>${w.n}</td><td>${w.duration.toFixed(1)} s</td>` +
-           `<td>${w.intDist.toFixed(2)} m${fmtErr(w.intDist, w.actual)}</td>` +
-           `<td>${w.actual === null ? "--" : w.actual.toFixed(2) + " m"}</td></tr>`;
-  }).join("");
-}
-
-function updateWalkPanel() {
-  const pill = $("walkState");
-  const states = {
-    idle: ["Hold the bin still, then press Start walk", "pill ok"],
-    moving: ["Walking... press Stop walk when still", "pill warn"],
-  };
-  const [text, cls] = connected ? states[walkState] : ["Not connected", "pill"];
-  pill.textContent = text; pill.className = cls;
-  $("btnWalk").textContent = walk ? "Stop walk" : "Start walk";
-  $("btnWalk").className = walk ? "recording" : "primary";
-
-  if (walk) {
-    $("wIntDist").textContent = Math.hypot(walk.p.x, walk.p.y).toFixed(2) + " m";
-    $("wIntSub").textContent = "live, uncorrected until you press Stop walk";
-  } else if (walks.length) {
-    const w = walks[walks.length - 1];
-    $("wIntDist").textContent = w.intDist.toFixed(2) + " m";
-    $("wIntSub").textContent = "last walk, corrected";
-  } else {
-    $("wIntDist").textContent = "--";
-    $("wIntSub").textContent = "corrected when you press Stop walk";
-  }
+function updateAccelPanel() {
+  const s = latest;
+  const f = (v) => (s ? v.toFixed(2) : "--");
+  $("aTotal").textContent = s ? s.at.toFixed(2) : "--";
+  $("aTotalG").textContent = s ? (s.at / GRAVITY).toFixed(3) + " g" : "--";
+  $("aLin").textContent = f(s && s.lt);
+  $("aHor").textContent = f(s && s.lh);
+  $("aVer").textContent = s ? (s.lv >= 0 ? "+" : "") + s.lv.toFixed(2) : "--";
+  $("aLinPeak").textContent = "peak " + peaks.lt.toFixed(2);
+  $("aHorPeak").textContent = "peak " + peaks.lh.toFixed(2);
+  $("aVerPeak").textContent = "peak ±" + peaks.lv.toFixed(2);
 }
 
 // ============================================================================
@@ -869,7 +734,6 @@ function updateStatus() {
   $("btnCal").disabled = !connected || calibrating;
   $("btnResetDrift").disabled = !connected;
   $("btnLog").disabled = !connected;
-  $("btnWalk").disabled = !connected || calibrating;
   $("btnLog").textContent = logging ? "Stop logging & save CSV" : "Start logging";
   $("btnLog").className = logging ? "recording" : "";
   $("logPill").style.display = logging ? "" : "none";
@@ -912,8 +776,10 @@ function updateNumbers() {
   $("sLog").textContent = logging
     ? `${logRows.length} rows (${(logRows.length / 50).toFixed(0)} s)` : "off";
 
-  updateWalkPanel();
+  updateAccelPanel();
   legend($("legAccel"), s, ["ax", "ay", "az"], 1, 3);
+  $("legLin").innerHTML = `<span style="--c: var(--h)">Horizontal ${s ? s.lh.toFixed(2) : "--"}</span>` +
+                          `<span style="--c: var(--v)">Vertical ${s ? s.lv.toFixed(2) : "--"}</span>`;
   legend($("legGyro"), s, ["gx", "gy", "gz"], DEG, 2);
 
   // Help if nothing arrives
@@ -932,6 +798,7 @@ function frame(t) {
   if (dirty) {
     drawChart($("chartAccel"), ["ax", "ay", "az"], 1, 0.5);
     drawChart($("chartGyro"), ["gx", "gy", "gz"], DEG, 2);
+    drawChart($("chartLin"), ["lh", "lv"], 1, 0.5);
     drawDial($("dialRoll"), latest ? latest.roll : null, "tilt");
     drawDial($("dialPitch"), latest ? latest.pitch : null, "tilt");
     drawDial($("dialYaw"), latest ? latest.yaw : null, "compass");
@@ -949,22 +816,7 @@ $("btnDemo").onclick = startDemo;
 $("btnCal").onclick = () => send("0");
 $("btnResetDrift").onclick = () => { resetDrift(); addMessage("Drift reset."); };
 $("btnLog").onclick = () => (logging ? stopLogging() : startLogging());
-$("btnSaveActual").onclick = () => {
-  const v = parseFloat($("inActual").value);
-  if (!walks.length || !(v > 0)) { addMessage("Do a walk and type its measured distance first."); return; }
-  walks[walks.length - 1].actual = v;
-  renderWalkTable();
-};
-$("btnWalk").onclick = () => { walkRequest = walk ? "stop" : "start"; };
-$("btnWalkClear").onclick = () => { walks = []; renderWalkTable(); };
-$("btnWalkCopy").onclick = async () => {
-  const lines = ["walk\tduration_s\tintegration_m\tmeasured_m"];
-  for (const w of walks) {
-    lines.push([w.n, w.duration.toFixed(2), w.intDist.toFixed(2), w.actual === null ? "" : w.actual].join("\t"));
-  }
-  try { await navigator.clipboard.writeText(lines.join("\n")); addMessage("Walk table copied (paste into Excel/Sheets)."); }
-  catch (e) { addMessage("Could not copy: " + e.message); }
-};
+$("btnResetPeaks").onclick = () => { resetPeaks(); addMessage("Peaks reset."); };
 window.addEventListener("resize", () => (dirty = true));
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => (dirty = true));
 
