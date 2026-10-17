@@ -32,6 +32,18 @@ The same works from the Serial Monitor: `go`, `stop`, `go gps`, `stop lora`,
 `AUTO_START 0` in `main.cpp` to start in standby instead), so a board on a
 battery still works as the other end of the radio links.
 
+### Home page and saving data
+
+**Home** shows each technology's current distance side by side (GPS from its
+origin, LoRa and ESP-NOW from signal strength; the IMU shows acceleration,
+since it doesn't measure distance) and graphs the last 5 minutes. Type the
+actual tape distance there to record it next to every reading.
+
+Everything that arrives is recorded while connected. The button at the right of
+the tab bar saves the current tab's data as a CSV; **Save all CSV** downloads
+one ZIP with every module's CSV, the overview (one row per second, all
+distances side by side) and the console log. **Clear data** starts over.
+
 ### IMU
 
 The IMU tab shows acceleration (no step or walk counting): total |a|, the

@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ME74 Radio Dashboard</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #F4F5F7; --bar: #FFFFFF; --text: #1B1F24; --muted: #667085; --line: #E2E5EA;
+    --accent: #2563EB; --accent-text: #FFFFFF; --ok: #15803D; --warn: #B45309; --bad: #DC2626;
+    --console: #0F1115; --console-text: #D6DAE1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #0B0D11; --bar: #14171D; --text: #E6E8EB; --muted: #9AA4B2; --line: #262B35;
+      --accent: #4F8CFF; --accent-text: #0B0D12; --ok: #3FB950; --warn: #E3A008; --bad: #F05252;
+      --console: #07090C; --console-text: #C9CED6;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text); display: flex; flex-direction: column;
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px;
+           background: var(--bar); border-bottom: 1px solid var(--line); }
+  h1 { font-size: 17px; margin: 0 6px 0 0; }
+  .pill { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+          border: 1px solid currentColor; color: var(--muted); }
+  .pill.ok { color: var(--ok); } .pill.bad { color: var(--bad); }
+  .spacer { flex: 1; }
+  button { font: inherit; font-weight: 600; padding: 7px 14px; border-radius: 8px; cursor: pointer;
+           border: 1px solid var(--line); background: var(--bar); color: var(--text); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button:disabled { opacity: .45; cursor: default; }
+  #runbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px;
+            background: var(--bar); border-bottom: 1px solid var(--line); }
+  #runbar .go { min-width: 110px; }
+  .mods { display: flex; flex-wrap: wrap; gap: 8px; margin-left: 6px; }
+  .mod { display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 12px; border: 1px solid var(--line);
+         border-radius: 10px; background: var(--bg); }
+  .mod .name { font-weight: 700; cursor: pointer; }
+  .mod .state { font-size: 12px; font-weight: 600; color: var(--muted); min-width: 70px; }
+  .mod .state.run { color: var(--ok); } .mod .state.warn { color: var(--warn); }
+  .mod button { padding: 4px 10px; font-size: 13px; }
+  nav { display: flex; gap: 2px; padding: 0 12px; background: var(--bar); border-bottom: 1px solid var(--line);
+        overflow-x: auto; }
+  nav button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none;
+               padding: 10px 14px; color: var(--muted); white-space: nowrap; }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+  nav .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px;
+             background: var(--line); vertical-align: 1px; }
+  nav .dot.live { background: var(--ok); }
+  main { flex: 1; position: relative; min-height: 0; }
+  /* Hidden tabs stay laid out (visibility, not display:none) so their charts keep
+     sizing and updating in the background */
+  main iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg);
+                visibility: hidden; pointer-events: none; }
+  main iframe.active { visibility: visible; pointer-events: auto; }
+  #consoleView { position: absolute; inset: 0; display: none; flex-direction: column; padding: 14px 16px; gap: 10px;
+                 background: var(--bg); z-index: 1; }
+  #consoleView.active { display: flex; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .row label { display: flex; gap: 5px; align-items: center; color: var(--muted); }
+  #cmd { flex: 1; min-width: 200px; font: 13px ui-monospace, Menlo, Consolas, monospace; padding: 8px 10px;
+         border-radius: 8px; border: 1px solid var(--line); background: var(--bar); color: var(--text); }
+  #log { flex: 1; margin: 0; overflow: auto; padding: 12px; border-radius: 10px; background: var(--console);
+         color: var(--console-text); font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; white-space: pre; }
+  .help { color: var(--muted); font-size: 13px; margin: 0; }
+  #runbar .files { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  #runbar .files .count { color: var(--muted); font-size: 12px; }
+  nav #saveTab { margin-left: auto; align-self: center; border: 1px solid var(--line); border-radius: 8px;
+                 padding: 5px 12px; color: var(--text); font-size: 13px; white-space: nowrap; }
+  #homeView { position: absolute; inset: 0; display: none; overflow: auto; padding: 16px; background: var(--bg); z-index: 1; }
+  #homeView.active { display: block; }
+  .home-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 1100px) { .home-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 600px) { .home-grid { grid-template-columns: 1fr; } }
+  .card { background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+  .card h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+             display: flex; align-items: center; gap: 8px; }
+  .card h2 .swatch { width: 10px; height: 10px; border-radius: 3px; }
+  .card .big { font-size: 40px; font-weight: 800; line-height: 1.1; margin: 10px 0 2px; font-variant-numeric: tabular-nums; }
+  .card .big small { font-size: 18px; color: var(--muted); font-weight: 600; margin-left: 3px; }
+  .card .method { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .card .detail { font-size: 13px; font-variant-numeric: tabular-nums; min-height: 2.8em; }
+  .card .hint { color: var(--warn); font-size: 12px; font-weight: 600; margin-top: 4px; min-height: 1.4em; }
+  .card .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px;
+                padding-top: 8px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .card .foot a { color: var(--accent); cursor: pointer; text-decoration: none; font-weight: 600; }
+  .card label.cal { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--muted); margin-right: 8px; }
+  .card input.small { width: 58px; font: inherit; padding: 2px 5px; border-radius: 6px; border: 1px solid var(--line);
+                      background: var(--bg); color: var(--text); }
+  .chart-card { grid-column: 1 / -1; }
+  .chart-head { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 8px; }
+  .chart-head .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; }
+  .chart-head .legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .chart-head label { margin-left: auto; display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+  #homeChart { width: 100%; height: 300px; display: block; }
+  .help code { font: 12px ui-monospace, Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ME74 Radio Dashboard</h1>
+  <span id="status" class="pill">Not connected</span>
+  <span class="spacer"></span>
+  <button id="btnConnect" class="primary">Connect board</button>
+</header>
+<section id="runbar">
+  <button id="btnGoAll" class="primary go" disabled title="Start every module">&#9654; Go all</button>
+  <button id="btnStopAll" disabled title="Stop every module">&#9632; Stop all</button>
+  <div class="mods" id="mods"></div>
+  <div class="files">
+    <span class="count" id="recCount">No data recorded yet</span>
+    <button id="btnSaveAll" disabled title="Every module's CSV plus the overview, in one ZIP file">&#10515; Save all CSV</button>
+    <button id="btnClearData" disabled title="Forget all recorded data">Clear data</button>
+  </div>
+</section>
+<nav id="tabs"></nav>
+<main id="views">
+  <section id="homeView">
+    <div class="home-grid">
+      <div class="card" id="card-lora">
+        <h2><span class="swatch" style="background:#E07B39"></span>LoRa radio <span class="state" id="hs-lora"></span></h2>
+        <div class="big" id="hd-lora">--<small>m</small></div>
+        <div class="method">From received signal strength, board's calibration</div>
+        <div class="detail" id="hx-lora">--</div>
+        <div class="hint" id="hh-lora"></div>
+        <div class="foot"><span id="ha-lora">no data</span><a data-open="lora">Open LoRa tab</a></div>
+      </div>
+      <div class="card" id="card-espnow">
+        <h2><span class="swatch" style="background:#8E5CF6"></span>ESP-NOW <span class="state" id="hs-espnow"></span></h2>
+        <div class="big" id="hd-espnow">--<small>m</small></div>
+        <div class="method">From received signal strength (Wi-Fi radio)</div>
+        <div class="detail" id="hx-espnow">--</div>
+        <div><label class="cal">RSSI at 1 m <input class="small" id="enRef" type="number" step="1" value="-45"></label>
+             <label class="cal">n <input class="small" id="enN" type="number" step="0.1" min="1" max="6" value="2.5"></label></div>
+        <div class="foot"><span id="ha-espnow">no data</span><a data-open="espnow">Open ESP-NOW tab</a></div>
+      </div>
+      <div class="card chart-card">
+        <div class="chart-head">
+          <h2 style="margin:0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Distance over the last 5 minutes</h2>
+          <div class="legend">
+            <span><i style="background:#E07B39"></i>LoRa</span><span><i style="background:#8E5CF6"></i>ESP-NOW</span><span><i style="background:var(--muted)"></i>Tape (actual)</span>
+          </div>
+          <label>Actual distance (tape), m <input class="small" id="tape" type="number" step="0.01" min="0" placeholder="--"></label>
+        </div>
+        <canvas id="homeChart"></canvas>
+        <p class="help" style="margin-top:8px">The overview CSV saves one row per second with every technology's
+          distance side by side, plus the actual distance you type here, so you can compare them.</p>
+      </div>
+    </div>
+  </section>
+  <section id="consoleView">
+    <p class="help"><b>Go all</b> runs every module at once. To test one thing by itself, press <b>Only</b> on it
+      (the others stop), or use each module's Start/Stop. One USB connection feeds every tab. Firmware: <code>ME74_radios</code>. Each tab is the original
+      dashboard; its own Connect button is pressed for you when the board connects. Commands typed below go straight to
+      the board (try <code>help</code> or <code>info</code>).</p>
+    <div class="row">
+      <input id="cmd" placeholder="Command, e.g. info, status, origin, c 3.5" autocomplete="off">
+      <button id="btnSend">Send</button>
+      <button data-cmd="info">info</button>
+      <button data-cmd="help">help</button>
+    </div>
+    <div class="row" id="filters"><span style="color:var(--muted)">Show:</span></div>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script>
+const CHILDREN = {"lora": {"label": "LoRa radio", "button": "#connectBtn", "html": "\u003c!doctype html>\n\u003chtml lang=\"en\">\n\u003chead>\n\u003cscript>\n/* ME74 combined dashboard: virtual serial port fed by the main page */\n(function () {\n  const MOD = \"lora\";\n  const enc = new TextEncoder(), dec = new TextDecoder();\n  const listeners = {};\n  let controller = null, isOpen = false;\n  const port = {\n    readable: null, writable: null,\n    getInfo() { return { usbVendorId: 0x303a, usbProductId: 0x1001 }; },\n    async open() {\n      isOpen = true;\n      port.readable = new ReadableStream({\n        start(c) { controller = c; },\n        cancel() { controller = null; }\n      });\n      port.writable = new WritableStream({\n        write(chunk) {\n          const text = typeof chunk === \"string\" ? chunk : dec.decode(chunk);\n          parent.postMessage({ me74: 1, kind: \"send\", mod: MOD, text }, \"*\");\n        }\n      });\n    },\n    async close() {\n      isOpen = false;\n      try { if (controller) controller.close(); } catch (e) {}\n      controller = null;\n      port.readable = port.writable = null;\n    },\n    addEventListener() {}, removeEventListener() {}\n  };\n  const serial = {\n    requestPort: async () => port,\n    getPorts: async () => [port],\n    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },\n    removeEventListener(type, fn) { listeners[type] = (listeners[type] || []).filter((f) => f !== fn); }\n  };\n  try { Object.defineProperty(navigator, \"serial\", { value: serial, configurable: true }); } catch (e) {}\n\n  window.addEventListener(\"message\", (e) => {\n    const m = e.data;\n    if (!m || !m.me74) return;\n    if (m.kind === \"data\") {\n      if (controller) { try { controller.enqueue(enc.encode(m.text)); } catch (err) {} }\n    } else if (m.kind === \"connect\") {\n      if (!isOpen) { const b = document.querySelector(m.button); if (b) b.click(); }\n    } else if (m.kind === \"disconnect\") {\n      if (isOpen) (listeners.disconnect || []).forEach((f) => { try { f({ target: port }); } catch (err) {} });\n      try { if (controller) controller.close(); } catch (err) {}\n      controller = null;\n    } else if (m.kind === \"shown\") {\n      window.dispatchEvent(new Event(\"resize\"));\n    }\n  });\n})();\n\u003c/script>\n\n\u003cmeta charset=\"utf-8\">\n\u003cmeta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\u003ctitle>Radio Dashboard\u003c/title>\n\u003cstyle>\n  :root {\n    --bg: #0f1115;\n    --panel: #181b22;\n    --line: #2a2f3a;\n    --text: #e8eaf0;\n    --muted: #8b93a7;\n    --red: #e5484d;\n    --amber: #f5a524;\n    --green: #30a46c;\n    --blue: #4c8dff;\n    --violet: #b48cff;\n  }\n  * { box-sizing: border-box; }\n  body {\n    margin: 0; background: var(--bg); color: var(--text);\n    font: 18px/1.4 -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif;\n  }\n  header {\n    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;\n    padding: 16px 24px; border-bottom: 1px solid var(--line);\n  }\n  header h1 { font-size: 22px; margin: 0; flex: 1; }\n  #portInfo { color: var(--muted); font-size: 15px; }\n  button, input {\n    font: inherit; color: var(--text); background: #232836;\n    border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px;\n  }\n  button { cursor: pointer; font-weight: 600; }\n  button:hover:not(:disabled) { background: #2c3243; }\n  button:disabled { opacity: .45; cursor: default; }\n  button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }\n  button.danger { border-color: var(--red); color: #ff8a8d; }\n  input[type=number] { width: 110px; }\n  main {\n    display: grid; gap: 16px; padding: 16px 24px;\n    grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);\n  }\n  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }\n  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; min-width: 0; }\n  .panel h2 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }\n  .full { grid-column: 1 / -1; }\n\n  #banner {\n    grid-column: 1 / -1; border-radius: 12px; padding: 18px 24px;\n    font-size: 28px; font-weight: 700; background: #232836; color: var(--muted);\n  }\n  #banner.red { background: rgba(229,72,77,.18); color: #ff8a8d; border: 1px solid var(--red); }\n  #banner.amber { background: rgba(245,165,36,.16); color: #ffc65c; border: 1px solid var(--amber); }\n  #banner.green { background: rgba(48,164,108,.18); color: #5fd49a; border: 1px solid var(--green); }\n\n  .bigrow { display: flex; gap: 32px; flex-wrap: wrap; }\n  .big { font-size: 80px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }\n  .big small { font-size: 30px; color: var(--muted); font-weight: 600; }\n  .bigLabel { color: var(--muted); font-size: 14px; margin-bottom: 4px; }\n  #distNote { color: var(--muted); margin-top: 10px; }\n\n  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 24px; }\n  .stat .k { color: var(--muted); font-size: 14px; }\n  .stat .v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }\n\n  canvas { width: 100%; height: 240px; display: block; background: #0b0d11; border-radius: 8px; }\n  .legend { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px; margin-top: 8px; }\n  .legend i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }\n\n  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }\n  .progress { height: 14px; background: #0b0d11; border-radius: 7px; overflow: hidden; margin-top: 14px; }\n  .progress > div { height: 100%; width: 0; background: var(--blue); transition: width .3s; }\n  .progressText { color: var(--muted); margin-top: 6px; min-height: 1.4em; }\n  .hint { color: var(--muted); font-size: 15px; margin: 6px 0 0; }\n\n  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }\n  th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--line); }\n  th { color: var(--muted); font-size: 14px; font-weight: 600; }\n  th:first-child, td:first-child { text-align: left; }\n  .tableWrap { overflow-x: auto; }\n  .emptyRow td { text-align: center; color: var(--muted); }\n  td button { padding: 4px 10px; font-size: 14px; }\n\n  #fitText { margin-top: 10px; min-height: 1.4em; }\n  #log { height: 180px; overflow-y: auto; font: 14px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; }\n  label.toggle { display: flex; gap: 8px; align-items: center; cursor: pointer; }\n  label.toggle input { width: 20px; height: 20px; }\n\n  details summary { cursor: pointer; color: var(--muted); font-size: 14px; text-transform: uppercase; letter-spacing: .08em; }\n  details ol { margin: 12px 0 0; padding-left: 22px; }\n  details li { margin-bottom: 6px; }\n  code { font: 15px ui-monospace, Menlo, monospace; background: #0b0d11; padding: 1px 6px; border-radius: 4px; }\n\u003c/style>\n\u003c/head>\n\u003cbody>\n\u003cheader>\n  \u003ch1 id=\"title\">Radio Dashboard\u003c/h1>\n  \u003cspan id=\"portInfo\">Not connected\u003c/span>\n  \u003cbutton id=\"connectBtn\" class=\"primary\">Connect\u003c/button>\n\u003c/header>\n\n\u003cmain>\n  \u003cdiv id=\"banner\">Not connected\u003c/div>\n\n  \u003csection class=\"panel\">\n    \u003ch2>Live link\u003c/h2>\n    \u003cdiv class=\"bigrow\">\n      \u003cdiv>\n        \u003cdiv class=\"bigLabel\">Estimated distance\u003c/div>\n        \u003cdiv class=\"big\" id=\"dist\">--\u003csmall> m\u003c/small>\u003c/div>\n      \u003c/div>\n      \u003cdiv>\n        \u003cdiv class=\"bigLabel\">RSSI (filtered)\u003c/div>\n        \u003cdiv class=\"big\" id=\"rssiBig\">--\u003csmall> dBm\u003c/small>\u003c/div>\n      \u003c/div>\n    \u003c/div>\n    \u003cdiv id=\"distNote\">Not calibrated\u003c/div>\n  \u003c/section>\n\n  \u003csection class=\"panel\">\n    \u003ch2>Stats\u003c/h2>\n    \u003cdiv class=\"stats\">\n      \u003cdiv class=\"stat\">\u003cdiv class=\"k\">This node / listening for\u003c/div>\u003cdiv class=\"v\" id=\"sNode\">--\u003c/div>\u003c/div>\n      \u003cdiv class=\"stat\">\u003cdiv class=\"k\">Last packet\u003c/div>\u003cdiv class=\"v\" id=\"sAge\">--\u003c/div>\u003c/div>\n      \u003cdiv class=\"stat\">\u003cdiv class=\"k\">Raw RSSI / SNR\u003c/div>\u003cdiv class=\"v\" id=\"sRaw\">--\u003c/div>\u003c/div>\n      \u003cdiv class=\"stat\">\u003cdiv class=\"k\">RSSI spread (last 20)\u003c/div>\u003cdiv class=\"v\" id=\"sSpread\">--\u003c/div>\u003c/div>\n      \u003cdiv class=\"stat\">\u003cdiv class=\"k\">Packets RX / missed (est.)\u003c/div>\u003cdiv class=\"v\" id=\"sRx\">--\u003c/div>\u003c/div>\n      \u003cdiv class=\"stat\">\u003cdiv class=\"k\">TX OK / failed\u003c/div>\u003cdiv class=\"v\" id=\"sTx\">--\u003c/div>\u003c/div>\n      \u003cdiv class=\"stat\">\u003cdiv class=\"k\">Reference\u003c/div>\u003cdiv class=\"v\" id=\"sRef\">--\u003c/div>\u003c/div>\n      \u003cdiv class=\"stat\">\u003cdiv class=\"k\">Path loss exponent n\u003c/div>\u003cdiv class=\"v\" id=\"sN\">--\u003c/div>\u003c/div>\n    \u003c/div>\n  \u003c/section>\n\n  \u003csection class=\"panel\">\n    \u003ch2>RSSI over time (last 3 min)\u003c/h2>\n    \u003ccanvas id=\"rssiChart\">\u003c/canvas>\n    \u003cdiv class=\"legend\">\n      \u003cspan>\u003ci style=\"background:var(--blue)\">\u003c/i>raw packet\u003c/span>\n      \u003cspan>\u003ci style=\"background:#fff\">\u003c/i>filtered (same filter as firmware)\u003c/span>\n      \u003cspan>\u003ci style=\"background:var(--green)\">\u003c/i>reference RSSI\u003c/span>\n    \u003c/div>\n  \u003c/section>\n\n  \u003csection class=\"panel\">\n    \u003ch2>Distance over time (last 3 min)\u003c/h2>\n    \u003ccanvas id=\"distChart\">\u003c/canvas>\n    \u003cdiv class=\"legend\">\n      \u003cspan>\u003ci style=\"background:#fff\">\u003c/i>firmware estimate\u003c/span>\n      \u003cspan>\u003ci style=\"background:var(--amber)\">\u003c/i>tape distance (from box below)\u003c/span>\n    \u003c/div>\n  \u003c/section>\n\n  \u003csection class=\"panel\">\n    \u003ch2>1. Calibrate\u003c/h2>\n    \u003cdiv class=\"controls\">\n      \u003clabel for=\"calDist\">Known distance (m)\u003c/label>\n      \u003cinput id=\"calDist\" type=\"number\" min=\"0.1\" step=\"0.1\" value=\"1.0\">\n      \u003cbutton id=\"calBtn\" disabled>Calibrate\u003c/button>\n    \u003c/div>\n    \u003cp class=\"hint\">Firmware averages 20 packets from the other node, about 60 s. Don't move the boards.\u003c/p>\n    \u003cdiv class=\"progress\">\u003cdiv id=\"calBar\">\u003c/div>\u003c/div>\n    \u003cdiv class=\"progressText\" id=\"calText\">\u003c/div>\n\n    \u003ch2 style=\"margin-top:20px\">Path loss exponent\u003c/h2>\n    \u003cdiv class=\"controls\">\n      \u003cinput id=\"nInput\" type=\"number\" min=\"1\" max=\"6\" step=\"0.1\" value=\"2.0\">\n      \u003cbutton id=\"nBtn\" disabled>Send n\u003c/button>\n      \u003cbutton id=\"statusBtn\" disabled>Refresh status\u003c/button>\n    \u003c/div>\n    \u003cp class=\"hint\">2.0 = free space, ~2.5 to 3 typical indoors. Firmware accepts 1 to 6.\u003c/p>\n  \u003c/section>\n\n  \u003csection class=\"panel\">\n    \u003ch2>2. Measure a point\u003c/h2>\n    \u003cdiv class=\"controls\">\n      \u003clabel for=\"tapeDist\">Tape distance (m)\u003c/label>\n      \u003cinput id=\"tapeDist\" type=\"number\" min=\"0.1\" step=\"0.1\" placeholder=\"e.g. 5.0\">\n    \u003c/div>\n    \u003cdiv class=\"controls\" style=\"margin-top:12px\">\n      \u003clabel for=\"ptPackets\">Packets\u003c/label>\n      \u003cinput id=\"ptPackets\" type=\"number\" min=\"3\" max=\"100\" step=\"1\" value=\"10\">\n      \u003cbutton id=\"ptBtn\" disabled>Record point\u003c/button>\n      \u003cbutton id=\"ptCancel\" class=\"danger\" disabled>Cancel\u003c/button>\n    \u003c/div>\n    \u003cdiv class=\"controls\" style=\"margin-top:12px\">\n      \u003clabel class=\"toggle\">\u003cinput type=\"checkbox\" id=\"valToggle\"> Validation (excluded from the n fit)\u003c/label>\n    \u003c/div>\n    \u003cp class=\"hint\">Distance is computed from the average raw RSSI, so you don't have to wait for the firmware filter to catch up after moving.\u003c/p>\n    \u003cdiv class=\"progress\">\u003cdiv id=\"ptBar\">\u003c/div>\u003c/div>\n    \u003cdiv class=\"progressText\" id=\"ptText\">\u003c/div>\n\n    \u003ch2 style=\"margin-top:20px\">Recording\u003c/h2>\n    \u003cdiv class=\"controls\">\n      \u003clabel class=\"toggle\">\u003cinput type=\"checkbox\" id=\"recordToggle\"> Record every packet\u003c/label>\n      \u003cspan id=\"recordInfo\" style=\"color:var(--muted)\">\u003c/span>\n    \u003c/div>\n  \u003c/section>\n\n  \u003csection class=\"panel full\">\n    \u003cdiv class=\"controls\" style=\"justify-content:space-between; margin-bottom:12px\">\n      \u003ch2 style=\"margin:0\">3. Training points (used in the fit)\u003c/h2>\n      \u003cbutton id=\"csvBtn\" disabled>Download CSV\u003c/button>\n    \u003c/div>\n    \u003cdiv class=\"tableWrap\">\n    \u003ctable>\n      \u003cthead>\u003ctr>\u003cth>#\u003c/th>\u003cth>Tape (m)\u003c/th>\u003cth>Avg RSSI\u003c/th>\u003cth>Std\u003c/th>\u003cth>Avg SNR\u003c/th>\u003cth>Est. (m)\u003c/th>\u003cth>Error (m)\u003c/th>\u003cth>Firmware (m)\u003c/th>\u003cth>Pkts\u003c/th>\u003cth>Time\u003c/th>\u003cth>\u003c/th>\u003c/tr>\u003c/thead>\n      \u003ctbody id=\"results\">\u003ctr class=\"emptyRow\">\u003ctd colspan=\"11\">No training points yet\u003c/td>\u003c/tr>\u003c/tbody>\n    \u003c/table>\n    \u003c/div>\n  \u003c/section>\n\n  \u003csection class=\"panel full\">\n    \u003ch2>Validation points (not used in the fit)\u003c/h2>\n    \u003cdiv class=\"tableWrap\">\n    \u003ctable>\n      \u003cthead>\u003ctr>\u003cth>#\u003c/th>\u003cth>Tape (m)\u003c/th>\u003cth>Avg RSSI\u003c/th>\u003cth>Std\u003c/th>\u003cth>Board est. (m)\u003c/th>\u003cth>Board error (m)\u003c/th>\u003cth>Fit est. (m)\u003c/th>\u003cth>Fit error (m)\u003c/th>\u003cth>Pkts\u003c/th>\u003cth>Time\u003c/th>\u003cth>\u003c/th>\u003c/tr>\u003c/thead>\n      \u003ctbody id=\"valResults\">\u003ctr class=\"emptyRow\">\u003ctd colspan=\"11\">No validation points yet\u003c/td>\u003c/tr>\u003c/tbody>\n    \u003c/table>\n    \u003c/div>\n    \u003cdiv id=\"valSummary\" class=\"hint\">Board est. uses the board's settings when the point was recorded. Fit est. uses the current fit from the training points.\u003c/div>\n  \u003c/section>\n\n  \u003csection class=\"panel\">\n    \u003ch2>4. Path loss fit\u003c/h2>\n    \u003ccanvas id=\"fitChart\">\u003c/canvas>\n    \u003cdiv class=\"legend\">\n      \u003cspan>\u003ci style=\"background:var(--violet)\">\u003c/i>training points\u003c/span>\n      \u003cspan>\u003ci style=\"background:var(--amber)\">\u003c/i>validation points\u003c/span>\n      \u003cspan>\u003ci style=\"background:#fff\">\u003c/i>best-fit line\u003c/span>\n      \u003cspan>\u003ci style=\"background:var(--green)\">\u003c/i>current model\u003c/span>\n    \u003c/div>\n    \u003cdiv id=\"fitText\" class=\"hint\">Record points at 2 or more different distances to fit n.\u003c/div>\n    \u003cdiv class=\"controls\" style=\"margin-top:12px\">\n      \u003cbutton id=\"applyFitBtn\" disabled>Send fitted n to board\u003c/button>\n    \u003c/div>\n  \u003c/section>\n\n  \u003csection class=\"panel\">\n    \u003ch2>Serial log\u003c/h2>\n    \u003cdiv id=\"log\">\u003c/div>\n    \u003cdiv class=\"controls\" style=\"margin-top:12px\">\n      \u003cinput id=\"rawCmd\" type=\"text\" placeholder=\"Send raw command, e.g. status\" style=\"flex:1; min-width:160px\">\n      \u003cbutton id=\"rawBtn\" disabled>Send\u003c/button>\n    \u003c/div>\n  \u003c/section>\n\n  \u003csection class=\"panel full\">\n    \u003cdetails>\n      \u003csummary>Test procedure (quick version)\u003c/summary>\n      \u003col>\n        \u003cli>Flash board A with \u003ccode>radio_node1\u003c/code> and board B with \u003ccode>radio_node2\u003c/code>.\u003c/li>\n        \u003cli>Plug both in. Open this page in Chrome, Connect to one board. Optional: a second tab for the other board.\u003c/li>\n        \u003cli>Wait for the green \"Link OK\" banner. TX OK should climb every 3 s, packets RX every 3 s.\u003c/li>\n        \u003cli>Place the boards exactly 1.0 m apart (same height, antennas parallel). Calibrate at 1.0.\u003c/li>\n        \u003cli>Move to 2, 4, 6, 8, 10 m. At each, type the tape distance and Record point.\u003c/li>\n        \u003cli>Check the fit. Send the fitted n to the board.\u003c/li>\n        \u003cli>Turn on Validation and record new distances (e.g. 3, 5, 7, 9 m). Check their error in the Validation table.\u003c/li>\n        \u003cli>Download CSV before closing the page.\u003c/li>\n      \u003c/ol>\n    \u003c/details>\n  \u003c/section>\n\u003c/main>\n\n\u003cscript>\nconst $ = (id) => document.getElementById(id);\nconst TX_INTERVAL_MS = 3000;     // matches firmware TX_INTERVAL\nconst CAL_SAMPLES = 20;          // matches firmware CAL_SAMPLES\nconst FILTER_ALPHA = 0.25;       // matches firmware FILTER_ALPHA\nconst WINDOW_MS = 180000;\nconst LINK_LOST_MS = 10000;\n\nlet port = null, reader = null, writer = null;\nlet lastLineAt = 0;\n\n// Board state, learned from the serial text\nconst dev = {\n  node: null, calibrated: false, refDist: null, refRssi: null, n: null,\n  initError: null, plotMode: false,\n};\nlet calibrating = false, calCount = 0, calJustDone = false;\nlet pending = null;             // packet block being parsed: {rssi, snr}\nlet filtered = null;            // local copy of firmware EMA\nlet lastRx = null;              // {t, rssi, snr, dist}\nlet lastDist = null;\nlet rxCount = 0, missed = 0, lastRxAt = 0;\nlet txOk = 0, txFail = 0;\nlet packets = [];               // {t, rssi, filt, dist} for charts\nlet point = null;               // in-progress point measurement\nlet results = [];\nlet recording = false, rawRows = [];\n\n// ---------- Serial ----------\nif (!('serial' in navigator)) {\n  setBanner('Web Serial not available. Use Chrome or Edge.', 'red');\n  $('connectBtn').disabled = true;\n}\n\n$('connectBtn').onclick = async () => {\n  if (port) { await disconnect(); return; }\n  try {\n    port = await navigator.serial.requestPort();\n    await port.open({ baudRate: 115200 });\n  } catch (e) {\n    port = null;\n    log('Connect failed: ' + e.message);\n    return;\n  }\n  const info = port.getInfo();\n  $('portInfo').textContent = 'Connected' + (info.usbVendorId ? ` (USB ${info.usbVendorId.toString(16)}:${info.usbProductId.toString(16)})` : '');\n  $('connectBtn').textContent = 'Disconnect';\n  setBanner('Connected, waiting for board...', '');\n  writer = port.writable.getWriter();\n  lastLineAt = Date.now();\n  setControls();\n  readLoop();\n  // Make sure we're in text mode, then ask for settings. Repeat after the\n  // firmware's 2 s boot delay in case opening the port reset the board.\n  send('text'); send('status');\n  setTimeout(() => { if (port) { send('text'); send('status'); } }, 2500);\n};\n\nasync function disconnect() {\n  try { if (reader) await reader.cancel(); } catch {}\n  try { if (writer) writer.releaseLock(); } catch {}\n  try { await port.close(); } catch {}\n  port = reader = writer = null;\n  $('portInfo').textContent = 'Not connected';\n  $('connectBtn').textContent = 'Connect';\n  setBanner('Not connected', '');\n  setControls();\n}\n\nnavigator.serial?.addEventListener('disconnect', (e) => {\n  if (port && e.target === port) { log('Device unplugged.'); disconnect(); }\n});\n\nasync function readLoop() {\n  const decoder = new TextDecoderStream();\n  port.readable.pipeTo(decoder.writable).catch(() => {});\n  reader = decoder.readable.getReader();\n  let buf = '';\n  try {\n    while (true) {\n      const { value, done } = await reader.read();\n      if (done) break;\n      buf += value;\n      let i;\n      while ((i = buf.indexOf('\\n')) >= 0) {\n        const line = buf.slice(0, i).trim();\n        buf = buf.slice(i + 1);\n        if (line) handleLine(line);\n      }\n    }\n  } catch (e) {\n    log('Read error: ' + e.message);\n  } finally {\n    try { reader.releaseLock(); } catch {}\n  }\n}\n\nasync function send(cmd) {\n  if (!writer) return;\n  log('> ' + cmd);\n  await writer.write(new TextEncoder().encode(cmd + '\\n'));\n}\n\n// ---------- Parsing the firmware's text output ----------\nconst num = '(-?\\\\d+(?:\\\\.\\\\d+)?)';\nconst re = (s) => new RegExp('^' + s.replace(/#/g, num));\n\nfunction handleLine(line) {\n  lastLineAt = Date.now();\n  let m;\n\n  if (line === 'TX OK') { txOk++; return refresh(); }\n  if (line === 'TX FAILED') { txFail++; log(line); return refresh(); }\n\n  // Packet block: \"RX from node N\" / \"RSSI: x dBm\" / \"SNR: x dB\" / \"Distance: x m\" | \"Not calibrated.\"\n  if ((m = line.match(re('RX from node #')))) { pending = { from: +m[1] }; return; }\n  if (pending && (m = line.match(re('RSSI: # dBm')))) { pending.rssi = +m[1]; return; }\n  if (pending && (m = line.match(re('SNR: # dB')))) { pending.snr = +m[1]; return; }\n  if (pending && (m = line.match(re('Distance: # m')))) { finishPacket(+m[1]); return; }\n  if (pending && line === 'Not calibrated.') { finishPacket(null); return; }\n\n  // Calibration\n  if ((m = line.match(re('Known distance: # m')))) {\n    calibrating = true; calCount = 0; dev.calibrated = false; dev.refDist = +m[1];\n    filtered = null;\n    log(line); return refresh();\n  }\n  if ((m = line.match(re('Calibration: #/# RSSI=#')))) {\n    calibrating = true; calCount = +m[1];\n    onPacket(+m[3], null, null);\n    return refresh();\n  }\n  if (line === 'CALIBRATION COMPLETE') { calibrating = false; calJustDone = true; dev.calibrated = true; filtered = null; log(line); return refresh(); }\n  if (line === 'Invalid distance.') { calibrating = false; log(line); return refresh(); }\n\n  // Status / settings\n  if ((m = line.match(re('(?:Node|NODE ID): #')))) { dev.node = +m[1]; log(line); return refresh(); }\n  if ((m = line.match(/^Calibrated: (YES|NO)/))) { dev.calibrated = m[1] === 'YES'; log(line); return refresh(); }\n  if ((m = line.match(re('Reference distance: #')))) { dev.refDist = +m[1]; log(line); return refresh(); }\n  if ((m = line.match(re('Reference RSSI: #')))) {\n    dev.refRssi = +m[1];\n    if (calJustDone) {\n      calJustDone = false;\n      $('calBar').style.width = '0';\n      $('calText').textContent = `Done. Reference RSSI ${dev.refRssi.toFixed(1)} dBm at ${fmt(dev.refDist, 2)} m.`;\n    }\n    log(line); return refresh();\n  }\n  if ((m = line.match(re('Path loss exponent: #')))) { dev.n = +m[1]; log(line); return refresh(); }\n  if (line === 'Text mode enabled.') { dev.plotMode = false; return; }\n\n  // Plot-mode output: we lose RSSI here, so switch back to text\n  if ((m = line.match(re('Distance_m:#,Reference_m:#')))) {\n    if (!dev.plotMode) { dev.plotMode = true; log('Board is in plot mode, switching to text.'); send('text'); }\n    return;\n  }\n\n  // Fatal setup errors\n  if (/INIT FAILED|Unexpected radio chip|Frequency setup failed/.test(line)) {\n    dev.initError = line; log(line); return refresh();\n  }\n  if (line === 'LoRa radio ready.') { dev.initError = null; resetCounters(); }\n\n  log(line);\n}\n\nfunction finishPacket(dist) {\n  const p = pending; pending = null;\n  if (p.rssi == null) return;\n  onPacket(p.rssi, p.snr, dist);\n}\n\nfunction onPacket(rssi, snr, dist) {\n  const now = Date.now();\n  if (lastRxAt) {\n    const slots = Math.round((now - lastRxAt) / TX_INTERVAL_MS);\n    if (slots > 1) missed += slots - 1;\n  }\n  lastRxAt = now;\n  rxCount++;\n\n  // Same EMA as firmware (firmware skips it during calibration)\n  if (!calibrating) filtered = filtered == null ? rssi : FILTER_ALPHA * rssi + (1 - FILTER_ALPHA) * filtered;\n\n  lastRx = { t: now, rssi, snr };\n  if (dist != null) lastDist = dist;\n  packets.push({ t: now, rssi, filt: calibrating ? null : filtered, dist });\n  packets = packets.filter(p => p.t > now - WINDOW_MS);\n\n  if (point && !calibrating) addToPoint(rssi, snr, dist);\n\n  if (recording) {\n    rawRows.push([new Date(now).toISOString(), dev.node, rssi, snr, calibrating ? '' : filtered.toFixed(2), dist ?? '',\n                  dev.refDist, dev.refRssi, dev.n, $('tapeDist').value, calibrating ? 1 : 0]);\n    $('recordInfo').textContent = `${rawRows.length} rows`;\n  }\n  refresh();\n}\n\nfunction resetCounters() {\n  rxCount = missed = txOk = txFail = 0; lastRxAt = 0; filtered = null;\n  lastRx = null; lastDist = null; packets = [];\n  calibrating = false; dev.calibrated = false;\n}\n\n// ---------- Model ----------\nfunction modelDistance(rssi) {\n  if (!dev.calibrated || dev.refRssi == null || dev.refDist == null || dev.n == null) return null;\n  return dev.refDist * Math.pow(10, (dev.refRssi - rssi) / (10 * dev.n));\n}\n\n// ---------- Point measurement ----------\n$('ptBtn').onclick = () => {\n  const tape = parseFloat($('tapeDist').value);\n  const want = Math.max(3, Math.min(100, parseInt($('ptPackets').value) || 10));\n  if (!(tape > 0)) { log('Enter the tape distance first.'); $('tapeDist').focus(); return; }\n  point = { tape, want, rssi: [], snr: [], fw: [], validation: $('valToggle').checked };\n  $('ptText').textContent = `Waiting for packets, about ${Math.round(want * TX_INTERVAL_MS / 1000)} s...`;\n  $('ptBar').style.width = '0';\n  setControls();\n};\n$('valToggle').onchange = (e) => { $('ptBtn').textContent = e.target.checked ? 'Record validation point' : 'Record point'; };\n$('ptCancel').onclick = () => { point = null; $('ptBar').style.width = '0'; $('ptText').textContent = 'Cancelled.'; setControls(); };\n\nfunction addToPoint(rssi, snr, dist) {\n  point.rssi.push(rssi);\n  if (snr != null) point.snr.push(snr);\n  if (dist != null) point.fw.push(dist);\n  const k = point.rssi.length;\n  $('ptBar').style.width = (100 * k / point.want) + '%';\n  $('ptText').textContent = `${k}/${point.want} packets, ${Math.round((point.want - k) * TX_INTERVAL_MS / 1000)} s left`;\n  if (k \u003c point.want) return;\n\n  const avg = mean(point.rssi);\n  const est = modelDistance(avg);\n  const r = {\n    tape: point.tape, avgRssi: avg, std: std(point.rssi), avgSnr: point.snr.length ? mean(point.snr) : null,\n    est, err: est == null ? null : est - point.tape, fw: point.fw.length ? point.fw[point.fw.length - 1] : null,\n    pkts: k, time: new Date(), refDist: dev.refDist, refRssi: dev.refRssi, n: dev.n,\n    minRssi: Math.min(...point.rssi), maxRssi: Math.max(...point.rssi), validation: point.validation,\n  };\n  results.push(r);\n  $('ptText').textContent = `Done: ${r.avgRssi.toFixed(1)} dBm avg` + (est != null ? `, est ${est.toFixed(2)} m vs tape ${r.tape.toFixed(2)} m` : ' (not calibrated)');\n  log(`${r.validation ? 'Validation' : 'Training'} point @ ${r.tape} m: RSSI ${r.avgRssi.toFixed(1)} \u00b1 ${r.std.toFixed(1)} dBm`);\n  point = null;\n  renderResults();\n  setControls();\n}\n\nfunction mean(a) { return a.reduce((s, v) => s + v, 0) / a.length; }\nfunction std(a) { const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length); }\n\nconst signed = (v) => v == null ? '--' : (v >= 0 ? '+' : '') + v.toFixed(2);\n\nfunction fillTable(tb, rows, empty, cells) {\n  tb.innerHTML = '';\n  if (!rows.length) tb.innerHTML = `\u003ctr class=\"emptyRow\">\u003ctd colspan=\"11\">${empty}\u003c/td>\u003c/tr>`;\n  rows.forEach((r, k) => {\n    const tr = document.createElement('tr');\n    [k + 1, ...cells(r)].forEach(v => {\n      const td = document.createElement('td'); td.textContent = v; tr.appendChild(td);\n    });\n    const td = document.createElement('td');\n    const b = document.createElement('button'); b.textContent = 'Remove'; b.className = 'danger';\n    b.onclick = () => { results.splice(results.indexOf(r), 1); renderResults(); };\n    td.appendChild(b); tr.appendChild(td);\n    tb.appendChild(tr);\n  });\n}\n\nfunction renderResults() {\n  fillTable($('results'), results.filter(r => !r.validation), 'No training points yet', (r) =>\n    [r.tape.toFixed(2), r.avgRssi.toFixed(1), r.std.toFixed(1), fmt(r.avgSnr, 1),\n     fmt(r.est, 2), signed(r.err), fmt(r.fw, 2), r.pkts, r.time.toLocaleTimeString()]);\n  $('csvBtn').disabled = results.length === 0;\n  updateFit();\n  renderValidation();\n}\n\nfunction renderValidation() {\n  const val = results.filter(r => r.validation);\n  fillTable($('valResults'), val, 'No validation points yet', (r) => {\n    const f = fitDistance(r.avgRssi);\n    return [r.tape.toFixed(2), r.avgRssi.toFixed(1), r.std.toFixed(1), fmt(r.est, 2), signed(r.err),\n            fmt(f, 2), signed(f == null ? null : f - r.tape), r.pkts, r.time.toLocaleTimeString()];\n  });\n  const summarize = (label, errs) => {\n    if (!errs.length) return `${label}: --`;\n    const abs = errs.map(e => Math.abs(e.err)), pct = errs.map(e => 100 * Math.abs(e.err) / e.tape);\n    return `${label}: mean |error| ${mean(abs).toFixed(2)} m (${mean(pct).toFixed(0)}%), ` +\n           `RMSE ${Math.sqrt(mean(abs.map(a => a * a))).toFixed(2)} m, worst ${Math.max(...abs).toFixed(2)} m`;\n  };\n  $('valSummary').textContent = !val.length\n    ? \"Board est. uses the board's settings when the point was recorded. Fit est. uses the current fit from the training points.\"\n    : summarize(`Board model (${val.filter(r => r.err != null).length} pts)`, val.filter(r => r.err != null).map(r => ({ err: r.err, tape: r.tape }))) +\n      '. ' + summarize('Fitted model', fit ? val.map(r => ({ err: fitDistance(r.avgRssi) - r.tape, tape: r.tape })) : []) + '.';\n}\n\n// ---------- Path loss fit: RSSI = A - 10 n log10(d) ----------\nlet fit = null;\nfunction updateFit() {\n  fit = null;\n  const train = results.filter(r => !r.validation);\n  const xs = train.map(r => Math.log10(r.tape)), ys = train.map(r => r.avgRssi);\n  const distinct = new Set(train.map(r => r.tape)).size;\n  if (distinct >= 2) {\n    const mx = mean(xs), my = mean(ys);\n    let sxy = 0, sxx = 0, syy = 0;\n    xs.forEach((x, i) => { sxy += (x - mx) * (ys[i] - my); sxx += (x - mx) ** 2; syy += (ys[i] - my) ** 2; });\n    const slope = sxy / sxx, A = my - slope * mx;\n    const r2 = syy > 0 ? (sxy * sxy) / (sxx * syy) : 1;\n    fit = { n: -slope / 10, A, r2 };\n    const d0 = dev.refDist ?? 1;\n    const rssiAtRef = A - 10 * fit.n * Math.log10(d0);\n    let txt = `Fitted n = ${fit.n.toFixed(2)}, R\u00b2 = ${r2.toFixed(3)}, fitted RSSI at ${d0} m = ${rssiAtRef.toFixed(1)} dBm`;\n    if (dev.refRssi != null) txt += ` (board has ${dev.refRssi.toFixed(1)})`;\n    if (fit.n \u003c 1 || fit.n > 6) txt += '. Outside 1 to 6, the board will reject it. Check for bad points.';\n    $('fitText').textContent = txt;\n  } else {\n    $('fitText').textContent = 'Record training points at 2 or more different distances to fit n.';\n  }\n  setControls();\n  drawFit();\n}\n// Distance the fitted line predicts for an RSSI (x = log10(d) in meters)\nfunction fitDistance(rssi) { return fit ? Math.pow(10, (fit.A - rssi) / (10 * fit.n)) : null; }\n\n$('applyFitBtn').onclick = () => { if (fit) { send('n ' + fit.n.toFixed(2)); $('nInput').value = fit.n.toFixed(2); } };\n\n// ---------- Controls ----------\n$('calBtn').onclick = () => {\n  const d = parseFloat($('calDist').value);\n  if (!(d > 0)) { log('Enter a known distance > 0.'); return; }\n  point = null;\n  send('c ' + d);\n};\n$('nBtn').onclick = () => {\n  const n = parseFloat($('nInput').value);\n  if (!(n >= 1 && n \u003c= 6)) { log('n must be between 1 and 6 (firmware ignores anything else).'); return; }\n  send('n ' + n);\n};\n$('statusBtn').onclick = () => send('status');\n$('rawBtn').onclick = () => { const v = $('rawCmd').value.trim(); if (v) { send(v); $('rawCmd').value = ''; } };\n$('rawCmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('rawBtn').click(); });\n$('tapeDist').addEventListener('input', drawCharts);\n\nfunction setControls() {\n  const c = !!port;\n  $('calBtn').disabled = !c || calibrating;\n  $('nBtn').disabled = !c;\n  $('statusBtn').disabled = !c;\n  $('rawBtn').disabled = !c;\n  $('ptBtn').disabled = !c || !!point || calibrating;\n  $('ptCancel').disabled = !point;\n  $('applyFitBtn').disabled = !c || !fit || !(fit.n >= 1 && fit.n \u003c= 6);\n}\n\n// ---------- Display ----------\nfunction fmt(v, d) { return v == null ? '--' : Number(v).toFixed(d); }\nfunction setBanner(text, cls) { $('banner').textContent = text; $('banner').className = cls; }\nconst peer = () => dev.node == null ? null : (dev.node === 1 ? 2 : 1);\n\nfunction refresh() {\n  const now = Date.now();\n  if (dev.node != null) {\n    $('title').textContent = `Radio Dashboard \u00b7 Node ${dev.node}`;\n    document.title = `Node ${dev.node} \u00b7 Radio`;\n  }\n  $('sNode').textContent = dev.node == null ? '--' : `${dev.node} / ${peer()}`;\n  $('sAge').textContent = lastRx ? ((now - lastRx.t) / 1000).toFixed(0) + ' s ago' : '--';\n  $('sRaw').textContent = lastRx ? `${lastRx.rssi} / ${fmt(lastRx.snr, 1)}` : '--';\n  const last20 = packets.slice(-20).map(p => p.rssi);\n  $('sSpread').textContent = last20.length >= 3 ? `\u00b1${std(last20).toFixed(1)} dB` : '--';\n  const lossPct = rxCount + missed ? 100 * missed / (rxCount + missed) : 0;\n  $('sRx').textContent = `${rxCount} / ${missed}` + (rxCount + missed > 5 ? ` (${lossPct.toFixed(0)}%)` : '');\n  $('sTx').textContent = `${txOk} / ${txFail}`;\n  $('sRef').textContent = dev.refDist != null && dev.refRssi != null ? `${dev.refRssi.toFixed(1)} @ ${dev.refDist.toFixed(2)} m` : '--';\n  $('sN').textContent = fmt(dev.n, 2);\n\n  $('rssiBig').innerHTML = `${filtered == null ? '--' : filtered.toFixed(1)}\u003csmall> dBm\u003c/small>`;\n  if (dev.calibrated && lastDist != null) {\n    $('dist').innerHTML = `${lastDist.toFixed(2)}\u003csmall> m\u003c/small>`;\n    $('distNote').textContent = `Calibrated at ${fmt(dev.refDist, 2)} m, n = ${fmt(dev.n, 2)}`;\n  } else {\n    $('dist').innerHTML = '--\u003csmall> m\u003c/small>';\n    $('distNote').textContent = calibrating ? 'Calibrating...' : (dev.calibrated ? 'Waiting for packet' : 'Not calibrated');\n  }\n\n  // Calibration progress\n  if (calibrating) {\n    $('calBar').style.width = (100 * calCount / CAL_SAMPLES) + '%';\n    $('calText').textContent = `${calCount}/${CAL_SAMPLES} packets, about ${Math.round((CAL_SAMPLES - calCount) * TX_INTERVAL_MS / 1000)} s left`;\n  }\n\n  updateBanner();\n  setControls();\n  drawCharts();\n}\n\nfunction updateBanner() {\n  if (!port) return;\n  const now = Date.now();\n  if (dev.initError) return setBanner(`Radio error: ${dev.initError}. Check wiring, then reset board.`, 'red');\n  if (now - lastLineAt > 5000) return setBanner('No messages from board (reset? unplugged?)', 'red');\n  if (dev.node == null) return setBanner('Connected, waiting for status...', '');\n  const p = peer();\n  if (!lastRx) return setBanner(`Waiting for packets from node ${p}. Is it powered and flashed as node ${p}?`, 'amber');\n  const age = now - lastRx.t;\n  if (age > LINK_LOST_MS) return setBanner(`Link lost: nothing from node ${p} for ${Math.round(age / 1000)} s`, 'red');\n  if (calibrating) return setBanner(`Calibrating: ${calCount}/${CAL_SAMPLES}. Keep boards still.`, 'amber');\n  setBanner(`Link OK \u00b7 RSSI ${lastRx.rssi} dBm \u00b7 SNR ${fmt(lastRx.snr, 1)} dB` + (dev.calibrated ? '' : ' \u00b7 not calibrated'), 'green');\n}\n\nfunction log(msg) {\n  const el = $('log');\n  el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\\n`;\n  if (el.textContent.length > 60000) el.textContent = el.textContent.slice(-40000);\n  el.scrollTop = el.scrollHeight;\n}\n\n// ---------- Charts ----------\nfunction prep(canvas) {\n  const dpr = window.devicePixelRatio || 1;\n  const w = canvas.clientWidth, h = canvas.clientHeight;\n  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {\n    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);\n  }\n  const ctx = canvas.getContext('2d');\n  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);\n  ctx.clearRect(0, 0, w, h);\n  ctx.font = '12px -apple-system, sans-serif';\n  return { ctx, w, h };\n}\n\nfunction niceStep(span, target) {\n  const raw = span / target, p = Math.pow(10, Math.floor(Math.log10(raw)));\n  return [1, 2, 5, 10].map(k => k * p).find(s => s >= raw);\n}\n\n// Shared frame: y grid + labels; returns mappers\nfunction frame(ctx, w, h, x0, x1, y0, y1, yUnit) {\n  const L = 48, R = 10, T = 10, B = 22;\n  const X = (x) => L + (x - x0) / (x1 - x0) * (w - L - R);\n  const Y = (y) => T + (1 - (y - y0) / (y1 - y0)) * (h - T - B);\n  const step = niceStep(y1 - y0, 4);\n  ctx.strokeStyle = '#222733'; ctx.fillStyle = '#8b93a7'; ctx.lineWidth = 1;\n  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';\n  for (let v = Math.ceil(y0 / step) * step; v \u003c= y1 + 1e-9; v += step) {\n    ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w - R, Y(v)); ctx.stroke();\n    ctx.fillText(+v.toFixed(2) + (yUnit || ''), L - 6, Y(v));\n  }\n  return { X, Y, L, R, T, B };\n}\n\nfunction yRange(vals, minSpan) {\n  if (!vals.length) return [0, minSpan];\n  let lo = Math.min(...vals), hi = Math.max(...vals);\n  if (hi - lo \u003c minSpan) { const c = (lo + hi) / 2; lo = c - minSpan / 2; hi = c + minSpan / 2; }\n  const pad = (hi - lo) * 0.08;\n  return [lo - pad, hi + pad];\n}\n\nfunction timeAxis(ctx, X, h, now) {\n  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#8b93a7';\n  for (let s = 0; s \u003c= WINDOW_MS / 1000; s += 30) ctx.fillText(s === 0 ? 'now' : `-${s}s`, X(now - s * 1000), h - 6);\n}\n\nfunction hline(ctx, X, Y, x0, x1, y, color, dash) {\n  ctx.strokeStyle = color; ctx.setLineDash(dash || [6, 4]); ctx.lineWidth = 1.5;\n  ctx.beginPath(); ctx.moveTo(X(x0), Y(y)); ctx.lineTo(X(x1), Y(y)); ctx.stroke(); ctx.setLineDash([]);\n}\n\nfunction polyline(ctx, pts, color, width) {\n  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();\n  let started = false;\n  for (const [x, y] of pts) {\n    if (y == null) { started = false; continue; }\n    started ? ctx.lineTo(x, y) : ctx.moveTo(x, y); started = true;\n  }\n  ctx.stroke();\n}\n\nfunction waiting(ctx, w, h, text) {\n  ctx.fillStyle = '#8b93a7'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';\n  ctx.fillText(text, w / 2, h / 2);\n}\n\nfunction drawCharts() {\n  const now = Date.now(), t0 = now - WINDOW_MS;\n\n  // RSSI\n  {\n    const { ctx, w, h } = prep($('rssiChart'));\n    const vals = packets.flatMap(p => [p.rssi, p.filt].filter(v => v != null));\n    if (dev.refRssi != null && dev.calibrated) vals.push(dev.refRssi);\n    const [y0, y1] = yRange(vals, 10);\n    const { X, Y } = frame(ctx, w, h, t0, now, y0, y1);\n    timeAxis(ctx, X, h, now);\n    if (!packets.length) waiting(ctx, w, h, 'waiting for packets');\n    if (dev.calibrated && dev.refRssi != null) hline(ctx, X, Y, t0, now, dev.refRssi, '#30a46c');\n    ctx.fillStyle = 'rgba(76,141,255,.85)';\n    for (const p of packets) { ctx.beginPath(); ctx.arc(X(p.t), Y(p.rssi), 3, 0, Math.PI * 2); ctx.fill(); }\n    polyline(ctx, packets.map(p => [X(p.t), p.filt == null ? null : Y(p.filt)]), '#ffffff', 2);\n  }\n\n  // Distance\n  {\n    const { ctx, w, h } = prep($('distChart'));\n    const pts = packets.filter(p => p.dist != null);\n    const tape = parseFloat($('tapeDist').value);\n    const vals = pts.map(p => p.dist);\n    if (tape > 0) vals.push(tape);\n    let [y0, y1] = yRange(vals, 2);\n    y0 = Math.max(0, y0);\n    const { X, Y } = frame(ctx, w, h, t0, now, y0, y1, ' m');\n    timeAxis(ctx, X, h, now);\n    if (!pts.length) waiting(ctx, w, h, dev.calibrated ? 'waiting for packets' : 'calibrate first');\n    if (tape > 0) hline(ctx, X, Y, t0, now, tape, '#f5a524');\n    polyline(ctx, pts.map(p => [X(p.t), Y(p.dist)]), '#ffffff', 2);\n    ctx.fillStyle = '#ffffff';\n    for (const p of pts) { ctx.beginPath(); ctx.arc(X(p.t), Y(p.dist), 2.5, 0, Math.PI * 2); ctx.fill(); }\n  }\n}\n\nfunction drawFit() {\n  const { ctx, w, h } = prep($('fitChart'));\n  if (!results.length) { waiting(ctx, w, h, 'no points yet'); return; }\n  const ds = results.map(r => r.tape);\n  let lx0 = Math.log10(Math.min(...ds, dev.refDist ?? Infinity)), lx1 = Math.log10(Math.max(...ds, dev.refDist ?? 0));\n  if (lx1 - lx0 \u003c 0.5) { const c = (lx0 + lx1) / 2; lx0 = c - 0.25; lx1 = c + 0.25; }\n  lx0 -= 0.08; lx1 += 0.08;\n  const model = (lx) => dev.refRssi - 10 * dev.n * (lx - Math.log10(dev.refDist));\n  const haveModel = dev.calibrated && dev.refRssi != null && dev.n != null && dev.refDist != null;\n  const vals = results.flatMap(r => [r.minRssi, r.maxRssi]);\n  if (fit) vals.push(fit.A - 10 * fit.n * lx0, fit.A - 10 * fit.n * lx1);\n  if (haveModel) vals.push(model(lx0), model(lx1));\n  const [y0, y1] = yRange(vals, 10);\n  const { X, Y } = frame(ctx, w, h, lx0, lx1, y0, y1);\n\n  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#8b93a7';\n  for (const d of [0.1, 0.2, 0.5, 1, 2, 3, 5, 10, 20, 30, 50, 100, 200]) {\n    const lx = Math.log10(d);\n    if (lx >= lx0 && lx \u003c= lx1) ctx.fillText(d + ' m', X(lx), h - 6);\n  }\n  if (haveModel) polyline(ctx, [[X(lx0), Y(model(lx0))], [X(lx1), Y(model(lx1))]], '#30a46c', 1.5);\n  if (fit) polyline(ctx, [[X(lx0), Y(fit.A - 10 * fit.n * lx0)], [X(lx1), Y(fit.A - 10 * fit.n * lx1)]], '#ffffff', 2);\n  for (const r of results) {\n    const x = X(Math.log10(r.tape));\n    ctx.strokeStyle = r.validation ? 'rgba(245,165,36,.6)' : 'rgba(180,140,255,.6)'; ctx.lineWidth = 2;\n    ctx.beginPath(); ctx.moveTo(x, Y(r.minRssi)); ctx.lineTo(x, Y(r.maxRssi)); ctx.stroke();\n    ctx.beginPath(); ctx.arc(x, Y(r.avgRssi), 5, 0, Math.PI * 2);\n    if (r.validation) { ctx.fillStyle = '#0b0d11'; ctx.fill(); ctx.strokeStyle = '#f5a524'; ctx.stroke(); }\n    else { ctx.fillStyle = '#b48cff'; ctx.fill(); }\n  }\n}\n\n// ---------- CSV ----------\nfunction downloadCSV(name, header, rows) {\n  const esc = (v) => v == null ? '' : /[\",\\n]/.test(String(v)) ? `\"${String(v).replace(/\"/g, '\"\"')}\"` : String(v);\n  const text = [header, ...rows].map(r => r.map(esc).join(',')).join('\\n') + '\\n';\n  const a = document.createElement('a');\n  a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));\n  a.download = name;\n  a.click();\n  setTimeout(() => URL.revokeObjectURL(a.href), 1000);\n}\nconst stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');\n\n$('csvBtn').onclick = () => downloadCSV(`radio-points-node${dev.node ?? 'x'}-${stamp()}.csv`,\n  ['n', 'set', 'tape_m', 'avg_rssi_dbm', 'std_rssi_db', 'min_rssi', 'max_rssi', 'avg_snr_db', 'est_m', 'error_m', 'firmware_m',\n   'fit_est_m', 'fit_error_m', 'packets', 'ref_dist_m', 'ref_rssi_dbm', 'path_loss_n', 'fit_n', 'fit_A_dbm', 'time'],\n  results.map((r, i) => {\n    const f = fitDistance(r.avgRssi);\n    return [i + 1, r.validation ? 'validation' : 'training', r.tape, r.avgRssi.toFixed(2), r.std.toFixed(2), r.minRssi, r.maxRssi,\n      r.avgSnr?.toFixed(2), r.est?.toFixed(3), r.err?.toFixed(3), r.fw, f?.toFixed(3), f == null ? null : (f - r.tape).toFixed(3),\n      r.pkts, r.refDist, r.refRssi, r.n, fit?.n.toFixed(3), fit?.A.toFixed(2), r.time.toISOString()];\n  }));\n\n$('recordToggle').onchange = (e) => {\n  recording = e.target.checked;\n  if (recording) {\n    rawRows = [];\n    $('recordInfo').textContent = '0 rows';\n  } else if (rawRows.length) {\n    downloadCSV(`radio-raw-node${dev.node ?? 'x'}-${stamp()}.csv`,\n      ['pc_time', 'node', 'rssi_dbm', 'snr_db', 'filtered_rssi', 'firmware_dist_m', 'ref_dist_m', 'ref_rssi_dbm', 'path_loss_n', 'tape_m', 'calibrating'],\n      rawRows);\n    $('recordInfo').textContent = `Saved ${rawRows.length} rows`;\n  }\n};\n\nwindow.addEventListener('beforeunload', (e) => { if (results.length || rawRows.length) e.preventDefault(); });\nwindow.addEventListener('resize', () => { drawCharts(); drawFit(); });\nsetInterval(refresh, 1000);\nrefresh(); drawFit();\n\u003c/script>\n\u003c/body>\n\u003c/html>\n"}, "espnow": {"label": "ESP-NOW", "button": "#btnConnect", "html": "\u003c!doctype html>\n\u003chtml lang=\"en\">\n\u003chead>\n\u003cscript>\n/* ME74 combined dashboard: virtual serial port fed by the main page */\n(function () {\n  const MOD = \"espnow\";\n  const enc = new TextEncoder(), dec = new TextDecoder();\n  const listeners = {};\n  let controller = null, isOpen = false;\n  const port = {\n    readable: null, writable: null,\n    getInfo() { return { usbVendorId: 0x303a, usbProductId: 0x1001 }; },\n    async open() {\n      isOpen = true;\n      port.readable = new ReadableStream({\n        start(c) { controller = c; },\n        cancel() { controller = null; }\n      });\n      port.writable = new WritableStream({\n        write(chunk) {\n          const text = typeof chunk === \"string\" ? chunk : dec.decode(chunk);\n          parent.postMessage({ me74: 1, kind: \"send\", mod: MOD, text }, \"*\");\n        }\n      });\n    },\n    async close() {\n      isOpen = false;\n      try { if (controller) controller.close(); } catch (e) {}\n      controller = null;\n      port.readable = port.writable = null;\n    },\n    addEventListener() {}, removeEventListener() {}\n  };\n  const serial = {\n    requestPort: async () => port,\n    getPorts: async () => [port],\n    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },\n    removeEventListener(type, fn) { listeners[type] = (listeners[type] || []).filter((f) => f !== fn); }\n  };\n  try { Object.defineProperty(navigator, \"serial\", { value: serial, configurable: true }); } catch (e) {}\n\n  window.addEventListener(\"message\", (e) => {\n    const m = e.data;\n    if (!m || !m.me74) return;\n    if (m.kind === \"data\") {\n      if (controller) { try { controller.enqueue(enc.encode(m.text)); } catch (err) {} }\n    } else if (m.kind === \"connect\") {\n      if (!isOpen) { const b = document.querySelector(m.button); if (b) b.click(); }\n    } else if (m.kind === \"disconnect\") {\n      if (isOpen) (listeners.disconnect || []).forEach((f) => { try { f({ target: port }); } catch (err) {} });\n      try { if (controller) controller.close(); } catch (err) {}\n      controller = null;\n    } else if (m.kind === \"shown\") {\n      window.dispatchEvent(new Event(\"resize\"));\n    }\n  });\n})();\n\u003c/script>\n\n\u003cmeta charset=\"utf-8\">\n\u003cmeta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">\n\u003ctitle>ESP-NOW range map\u003c/title>\n\u003clink rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n\u003clink rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n\u003clink href=\"https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Chakra+Petch:wght@500;600&display=swap\" rel=\"stylesheet\">\n\u003cstyle>\n  :root {\n    color-scheme: light;\n    --bg: #EEF1F4;\n    --panel: #FFFFFF;\n    --ink: #18222F;\n    --muted: #5B6878;\n    --line: #D3D9E0;\n    --signal: #2457D6;\n    --good: #23865F;\n    --warn: #B7791F;\n    --bad: #C2413A;\n    --display: \"Chakra Petch\", \"Rajdhani\", \"Segoe UI\", system-ui, sans-serif;\n    --body: \"Barlow\", \"Segoe UI\", system-ui, -apple-system, sans-serif;\n    box-sizing: border-box;\n    padding-top: env(safe-area-inset-top, 0px);\n    padding-bottom: env(safe-area-inset-bottom, 0px);\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      color-scheme: dark;\n      --bg: #0F1724;\n      --panel: #172235;\n      --ink: #E6ECF3;\n      --muted: #8D9BB0;\n      --line: #2A3A52;\n      --signal: #7BA2FF;\n      --good: #4FC59A;\n      --warn: #E5B24F;\n      --bad: #F07A72;\n    }\n  }\n  *, *::before, *::after { box-sizing: inherit; }\n  html, body { margin: 0; }\n  body {\n    background: var(--bg);\n    color: var(--ink);\n    font-family: var(--body);\n    font-size: 16px;\n    line-height: 1.45;\n  }\n  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px; }\n\n  header {\n    display: flex; flex-wrap: wrap; align-items: center;\n    justify-content: space-between; gap: 12px; margin-bottom: 18px;\n  }\n  h1 {\n    font-family: var(--display); font-weight: 600;\n    font-size: 1.6rem; margin: 0; letter-spacing: 0.01em;\n  }\n  .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.95rem; }\n  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }\n  .status[data-state=\"live\"] .dot { background: var(--good); }\n  .status[data-state=\"demo\"] .dot { background: var(--signal); }\n  .status[data-state=\"error\"] .dot { background: var(--bad); }\n  .status[data-state=\"error\"] { color: var(--bad); }\n\n  .actions { display: flex; flex-wrap: wrap; gap: 8px; }\n  button {\n    font: 600 0.95rem var(--body);\n    padding: 9px 16px; border-radius: 8px; cursor: pointer;\n    border: 1px solid var(--line); background: var(--panel); color: var(--ink);\n  }\n  button.primary { background: var(--signal); border-color: var(--signal); color: #fff; }\n  @media (prefers-color-scheme: dark) { button.primary { color: #0F1724; } }\n  button:disabled { opacity: 0.45; cursor: default; }\n  button:focus-visible, input:focus-visible, summary:focus-visible {\n    outline: 3px solid var(--signal); outline-offset: 2px;\n  }\n\n  main {\n    display: grid;\n    grid-template-columns: minmax(0, 1.55fr) minmax(280px, 1fr);\n    gap: 20px; align-items: start;\n  }\n  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }\n\n  .panel {\n    background: var(--panel); border: 1px solid var(--line);\n    border-radius: 14px; padding: 16px;\n  }\n  .radar-box { position: relative; width: 100%; aspect-ratio: 1 / 1; max-height: 74vh; margin: 0 auto; }\n  .radar-box canvas { position: absolute; inset: 0; width: 100%; height: 100%; }\n  .caption { color: var(--muted); font-size: 0.92rem; margin: 10px 2px 0; }\n\n  .history { margin-top: 16px; }\n  .history h2, .side h2 {\n    font-family: var(--display); font-weight: 600; font-size: 1.05rem; margin: 0 0 8px;\n  }\n  .history canvas { width: 100%; height: 150px; display: block; }\n\n  .side { display: grid; gap: 16px; }\n  .distance {\n    font-family: var(--display); font-weight: 600;\n    font-size: clamp(3rem, 7vw, 4.4rem); line-height: 1; margin: 2px 0 6px;\n    font-variant-numeric: tabular-nums;\n  }\n  .distance small { font-size: 0.4em; color: var(--muted); margin-left: 4px; }\n  .range { color: var(--muted); margin: 0; }\n  .quality { font-weight: 600; }\n\n  dl.readouts { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; margin: 0; }\n  dl.readouts dt { color: var(--muted); }\n  dl.readouts dd { margin: 0; text-align: right; font-family: var(--display); font-weight: 500; font-variant-numeric: tabular-nums; }\n\n  .control { margin-bottom: 14px; }\n  .control label { display: flex; justify-content: space-between; font-weight: 500; margin-bottom: 4px; }\n  .control output { font-family: var(--display); font-variant-numeric: tabular-nums; }\n  .control p { margin: 4px 0 0; color: var(--muted); font-size: 0.88rem; }\n  input[type=\"range\"] { width: 100%; accent-color: var(--signal); }\n\n  details summary { cursor: pointer; font-weight: 600; }\n  input[type=\"text\"] {\n    width: 100%; font: 500 0.95rem var(--body); padding: 8px 10px; border-radius: 8px;\n    border: 1px solid var(--line); background: var(--bg); color: var(--ink);\n  }\n  .rec-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }\n  .rec-actions button { flex: 1 1 auto; }\n  .rec-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--bad); margin-right: 6px; vertical-align: middle; }\n  pre.log {\n    margin: 10px 0 0; max-height: 220px; overflow: auto;\n    font-size: 0.78rem; line-height: 1.35; color: var(--muted);\n    white-space: pre; background: var(--bg); padding: 10px; border-radius: 8px;\n  }\n  .note { color: var(--muted); font-size: 0.9rem; margin: 0; }\n\u003c/style>\n\u003c/head>\n\u003cbody>\n\u003cdiv class=\"wrap\">\n  \u003cheader>\n    \u003cdiv>\n      \u003ch1>ESP-NOW range map\u003c/h1>\n      \u003cdiv class=\"status\" id=\"status\" data-state=\"idle\" role=\"status\" aria-live=\"polite\">\n        \u003cspan class=\"dot\">\u003c/span>\u003cspan id=\"statusText\">Not connected. Plug in a board and connect, or run the demo.\u003c/span>\n      \u003c/div>\n    \u003c/div>\n    \u003cdiv class=\"actions\">\n      \u003cbutton class=\"primary\" id=\"btnConnect\">Connect board\u003c/button>\n      \u003cbutton id=\"btnDemo\">Run demo\u003c/button>\n      \u003cbutton id=\"btnStop\" disabled>Stop\u003c/button>\n    \u003c/div>\n  \u003c/header>\n\n  \u003cmain>\n    \u003csection class=\"panel\">\n      \u003cdiv class=\"radar-box\">\u003ccanvas id=\"radar\" aria-label=\"Range map: this board at the center, the other board's estimated distance shown as a ring\">\u003c/canvas>\u003c/div>\n      \u003cp class=\"caption\">This board is at the center. Signal strength gives distance but not direction, so the other board is somewhere on the ring. The shaded band shows how uncertain the estimate is.\u003c/p>\n\n      \u003cdiv class=\"history\">\n        \u003ch2>Signal over the last minute\u003c/h2>\n        \u003ccanvas id=\"history\" aria-label=\"Signal strength history\">\u003c/canvas>\n      \u003c/div>\n    \u003c/section>\n\n    \u003caside class=\"side\">\n      \u003csection class=\"panel\">\n        \u003ch2>Estimated distance\u003c/h2>\n        \u003cdiv class=\"distance\" id=\"distance\">--\u003csmall>m\u003c/small>\u003c/div>\n        \u003cp class=\"range\" id=\"range\">Waiting for the other board\u003c/p>\n      \u003c/section>\n\n      \u003csection class=\"panel\">\n        \u003cdl class=\"readouts\">\n          \u003cdt>This board hears peer\u003c/dt>\u003cdd id=\"rRssi\">--\u003c/dd>\n          \u003cdt>Peer hears this board\u003c/dt>\u003cdd id=\"rPeer\">--\u003c/dd>\n          \u003cdt>Signal quality\u003c/dt>\u003cdd id=\"rQuality\">--\u003c/dd>\n          \u003cdt>Packet loss\u003c/dt>\u003cdd id=\"rLoss\">--\u003c/dd>\n          \u003cdt>This board\u003c/dt>\u003cdd id=\"rMyMac\">--\u003c/dd>\n          \u003cdt>Peer board\u003c/dt>\u003cdd id=\"rPeerMac\">--\u003c/dd>\n        \u003c/dl>\n      \u003c/section>\n\n      \u003csection class=\"panel\">\n        \u003ch2>Calibration\u003c/h2>\n        \u003cdiv class=\"control\">\n          \u003clabel for=\"sRef\">Signal at 1 m \u003coutput id=\"oRef\">-45 dBm\u003c/output>\u003c/label>\n          \u003cinput type=\"range\" id=\"sRef\" min=\"-90\" max=\"-20\" step=\"1\" value=\"-45\">\n        \u003c/div>\n        \u003cdiv class=\"control\">\n          \u003clabel for=\"sN\">Environment factor \u003coutput id=\"oN\">2.5\u003c/output>\u003c/label>\n          \u003cinput type=\"range\" id=\"sN\" min=\"1.5\" max=\"4.5\" step=\"0.1\" value=\"2.5\">\n          \u003cp>About 2 outdoors in the open, 2.5 to 4 indoors with walls and furniture.\u003c/p>\n        \u003c/div>\n        \u003cbutton id=\"btnCal\" disabled>Set 1 m from current signal\u003c/button>\n        \u003cp class=\"note\" style=\"margin-top:8px\">Place the boards exactly 1 m apart, wait a few seconds for the reading to settle, then press this.\u003c/p>\n      \u003c/section>\n\n      \u003csection class=\"panel\">\n        \u003ch2>Recording\u003c/h2>\n        \u003cp class=\"note\" id=\"sessInfo\">Every reading is recorded automatically once data starts arriving.\u003c/p>\n        \u003cdiv class=\"control\" style=\"margin-top:10px\">\n          \u003clabel for=\"tLabel\">Test label\u003c/label>\n          \u003cinput type=\"text\" id=\"tLabel\" placeholder=\"e.g. 3 m, hallway, antenna up\" autocomplete=\"off\">\n          \u003cp>Saved with each reading, so you can compare runs later. Change it between tests.\u003c/p>\n        \u003c/div>\n        \u003cdiv class=\"rec-actions\">\n          \u003cbutton class=\"primary\" id=\"btnReport\" disabled>Save report (data + graphs)\u003c/button>\n          \u003cbutton id=\"btnCsv\" disabled>Save CSV\u003c/button>\n          \u003cbutton id=\"btnPng\" disabled>Save graphs (PNG)\u003c/button>\n          \u003cbutton id=\"btnLive\">Live-save to file\u003c/button>\n          \u003cbutton id=\"btnClear\" disabled>Clear recording\u003c/button>\n        \u003c/div>\n        \u003cp class=\"note\" id=\"liveInfo\" style=\"margin-top:8px\">\u003c/p>\n      \u003c/section>\n\n      \u003csection class=\"panel\">\n        \u003cdetails>\n          \u003csummary>Serial output\u003c/summary>\n          \u003cpre class=\"log\" id=\"log\">\u003c/pre>\n        \u003c/details>\n      \u003c/section>\n    \u003c/aside>\n  \u003c/main>\n\u003c/div>\n\n\u003cscript>\n(() => {\n  // ---------------- State ----------------\n  const S = {\n    rssi: null, peer: null, loss: null,\n    myMac: null, peerMac: null,\n    lost: true, lastPacket: 0, lastLine: 0,\n    recent: [], history: [],\n    ref: -45, n: 2.5,\n    mode: 'idle',\n    hasData: false          // true once the firmware's DATA lines are seen\n  };\n  const session = [];       // every recorded sample\n  let sessionT0 = null, savedCount = 0;\n  const HISTORY_MAX = 120;              // 120 x 0.5 s = 60 s\n  const SCALES = [1, 2, 3, 5, 10, 20, 30, 50, 100];\n  let viewScale = 5;\n  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;\n\n  const $ = id => document.getElementById(id);\n  const radar = $('radar'), hist = $('history');\n  const rctx = radar.getContext('2d'), hctx = hist.getContext('2d');\n\n  // ---------------- Helpers ----------------\n  const dist = r => Math.pow(10, (S.ref - r) / (10 * S.n));\n  const fmtM = d => d \u003c 10 ? d.toFixed(1) : String(Math.round(d));\n  function quality(r) {\n    if (r >= -50) return ['Excellent', 'good'];\n    if (r >= -60) return ['Good', 'good'];\n    if (r >= -70) return ['Fair', 'warn'];\n    if (r >= -80) return ['Weak', 'warn'];\n    return ['Very weak', 'bad'];\n  }\n  function sigma() {\n    const a = S.recent.slice(-20);\n    if (a.length \u003c 3) return 4;\n    const m = a.reduce((x, y) => x + y, 0) / a.length;\n    const v = a.reduce((x, y) => x + (y - m) * (y - m), 0) / (a.length - 1);\n    return Math.max(2, Math.sqrt(v));\n  }\n  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }\n  function setStatus(state, text) { $('status').dataset.state = state; $('statusText').textContent = text; }\n\n  // ---------------- Parsing ----------------\n  const logLines = [];\n  function log(line) {\n    logLines.push(line);\n    if (logLines.length > 60) logLines.shift();\n    const el = $('log');\n    el.textContent = logLines.join('\\n');\n    el.scrollTop = el.scrollHeight;\n  }\n\n  function pushHistory(v) {\n    S.history.push(v);\n    if (S.history.length > HISTORY_MAX) S.history.shift();\n  }\n\n  function ingestLine(line) {\n    if (!line.trim()) return;\n    S.lastLine = performance.now();\n    log(line);\n\n    const my = line.match(/My MAC:\\s*([0-9A-Fa-f:]{17})/);\n    if (my) { S.myMac = my[1].toUpperCase(); updateReadouts(); return; }\n\n    // Preferred: machine-readable line from the updated firmware\n    // DATA,board_ms,status,raw,smoothed,peer,loss,rx,missed\n    if (line.startsWith('DATA,')) {\n      const f = line.split(',');\n      if (f.length \u003c 9) return;\n      S.hasData = true;\n      const num = v => { const x = parseFloat(v); return isFinite(x) ? x : null; };\n      handleSample({ boardMs: num(f[1]), status: f[2].trim(), raw: num(f[3]), rssi: num(f[4]),\n                     peer: num(f[5]), loss: num(f[6]), rx: num(f[7]), missed: num(f[8]) });\n      return;\n    }\n\n    const pm = line.match(/Peer\\s+([0-9A-Fa-f:]{17})/);\n    if (pm) S.peerMac = pm[1].toUpperCase();\n    if (S.hasData) return;   // human-readable lines are only a fallback for older firmware\n\n    if (/No signal from peer/.test(line)) { handleSample({ status: 'LOST' }); return; }\n    const m = line.match(/I hear peer:\\s*(-?\\d+(?:\\.\\d+)?)\\s*dBm/);\n    if (!m) return;\n    const p = line.match(/Peer hears me:\\s*(-?\\d+)\\s*dBm/);\n    const l = line.match(/Loss:\\s*(\\d+(?:\\.\\d+)?)%/);\n    handleSample({ status: 'OK', rssi: parseFloat(m[1]), peer: p ? parseInt(p[1], 10) : null,\n                   loss: l ? parseFloat(l[1]) : null });\n  }\n\n  function handleSample(d) {\n    if (d.status === 'LOST' || d.rssi === null || d.rssi === undefined || !isFinite(d.rssi)) {\n      S.lost = true;\n      pushHistory(null);\n      record(d, true);\n      updateReadouts();\n      return;\n    }\n    S.rssi = d.rssi;\n    S.lost = false;\n    S.lastPacket = performance.now();\n    S.recent.push(d.rssi);\n    if (S.recent.length > 40) S.recent.shift();\n    pushHistory(d.rssi);\n    S.peer = (d.peer === null || d.peer === undefined) ? null : d.peer;\n    S.loss = (d.loss === null || d.loss === undefined) ? null : d.loss;\n    record(d, false);\n    updateReadouts();\n  }\n\n  // ---------------- Recording ----------------\n  const CSV_COLS = ['time_iso', 'elapsed_s', 'board_ms', 'source', 'label', 'status', 'rssi_raw_dbm',\n                    'rssi_smoothed_dbm', 'peer_hears_me_dbm', 'packet_loss_pct', 'packets_rx', 'packets_missed',\n                    'est_distance_m', 'distance_low_m', 'distance_high_m', 'cal_rssi_1m_dbm', 'cal_env_factor',\n                    'this_board_mac', 'peer_mac'];\n\n  function record(d, lost) {\n    const now = new Date();\n    if (sessionT0 === null) sessionT0 = now;\n    const s = sigma();\n    const row = {\n      time_iso: now.toISOString(),\n      elapsed_s: (now - sessionT0) / 1000,\n      board_ms: d.boardMs ?? null,\n      source: S.mode === 'demo' ? 'demo' : 'board',\n      label: $('tLabel').value.trim(),\n      status: lost ? 'LOST' : 'OK',\n      rssi_raw_dbm: lost ? null : (d.raw ?? null),\n      rssi_smoothed_dbm: lost ? null : d.rssi,\n      peer_hears_me_dbm: lost ? null : (d.peer ?? null),\n      packet_loss_pct: d.loss ?? null,\n      packets_rx: d.rx ?? null,\n      packets_missed: d.missed ?? null,\n      est_distance_m: lost ? null : dist(d.rssi),\n      distance_low_m: lost ? null : dist(d.rssi + s),\n      distance_high_m: lost ? null : dist(d.rssi - s),\n      cal_rssi_1m_dbm: S.ref,\n      cal_env_factor: S.n,\n      this_board_mac: S.myMac || '',\n      peer_mac: S.peerMac || ''\n    };\n    session.push(row);\n    if (live.handle) live.pending.push(csvLine(row));\n    updateSessionInfo();\n  }\n\n  function csvCell(v) {\n    if (v === null || v === undefined) return '';\n    if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(3);\n    const t = String(v);\n    return /[\",\\n]/.test(t) ? '\"' + t.replace(/\"/g, '\"\"') + '\"' : t;\n  }\n  function csvLine(r) { return CSV_COLS.map(c => csvCell(r[c])).join(',') + '\\n'; }\n  function buildCsv() { return CSV_COLS.join(',') + '\\n' + session.map(csvLine).join(''); }\n\n  function fmtDur(sec) {\n    sec = Math.round(sec);\n    const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s2 = sec % 60;\n    return (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + s2 + ' s';\n  }\n  let infoTimer = 0;\n  function updateSessionInfo() {\n    const nowMs = performance.now();\n    if (nowMs - infoTimer \u003c 400 && session.length > 1) return;\n    infoTimer = nowMs;\n    const has = session.length > 0;\n    ['btnReport', 'btnCsv', 'btnPng', 'btnClear'].forEach(id => $(id).disabled = !has);\n    if (!has) { $('sessInfo').textContent = 'Every reading is recorded automatically once data starts arriving.'; return; }\n    const lost = session.filter(r => r.status === 'LOST').length;\n    const unsaved = session.length - savedCount;\n    $('sessInfo').innerHTML = '\u003cspan class=\"rec-dot\">\u003c/span>' + session.length + ' readings over ' +\n      fmtDur(session[session.length - 1].elapsed_s) + (lost ? ' (' + lost + ' with no signal)' : '') +\n      (unsaved > 0 && !live.handle ? '. ' + unsaved + ' not saved yet.' : '. All saved.');\n  }\n\n  function stamp() {\n    const d = sessionT0 || new Date();\n    const p = n => String(n).padStart(2, '0');\n    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + '-' + p(d.getMinutes()) + '-' + p(d.getSeconds());\n  }\n  function download(name, blob) {\n    const a = document.createElement('a');\n    a.href = URL.createObjectURL(blob);\n    a.download = name;\n    document.body.appendChild(a); a.click(); a.remove();\n    setTimeout(() => URL.revokeObjectURL(a.href), 4000);\n    savedCount = session.length;\n    updateSessionInfo();\n  }\n\n  // ---------- Full-session graphs (always drawn on a white background) ----------\n  function niceStep(raw) {\n    const p = Math.pow(10, Math.floor(Math.log10(raw)));\n    const f = raw / p;\n    return (f \u003c= 1 ? 1 : f \u003c= 2 ? 2 : f \u003c= 5 ? 5 : 10) * p;\n  }\n  function plotPanel(ctx, X, Y, W, Hh, opt) {\n    const L = X + 78, R = X + W - 20, T = Y + 34, B = Y + Hh - 40;\n    const t1 = Math.max(opt.tMax, 1);\n    const tx = t => L + (R - L) * t / t1;\n    const [v0, v1] = opt.yRange;\n    const vy = v => B - (B - T) * (Math.max(v0, Math.min(v1, v)) - v0) / (v1 - v0);\n    ctx.fillStyle = '#18222F'; ctx.font = '600 20px Barlow, Segoe UI, sans-serif';\n    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';\n    ctx.fillText(opt.title, X + 10, Y + 22);\n    // no-signal periods\n    ctx.fillStyle = 'rgba(194,65,58,0.10)';\n    for (const [a, b] of opt.lostSpans) ctx.fillRect(tx(a), T, Math.max(2, tx(b) - tx(a)), B - T);\n    // grid\n    ctx.font = '13px Barlow, Segoe UI, sans-serif'; ctx.strokeStyle = '#E1E6EB'; ctx.lineWidth = 1;\n    ctx.fillStyle = '#5B6878';\n    const ys = niceStep((v1 - v0) / 5);\n    for (let v = Math.ceil(v0 / ys) * ys; v \u003c= v1 + 1e-9; v += ys) {\n      ctx.beginPath(); ctx.moveTo(L, vy(v)); ctx.lineTo(R, vy(v)); ctx.stroke();\n      ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText(+v.toFixed(2) + '', L - 8, vy(v));\n    }\n    const xs = niceStep(t1 / 8);\n    for (let t = 0; t \u003c= t1 + 1e-9; t += xs) {\n      ctx.beginPath(); ctx.moveTo(tx(t), T); ctx.lineTo(tx(t), B); ctx.stroke();\n      ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(fmtAxisTime(t), tx(t), B + 6);\n    }\n    ctx.save(); ctx.translate(X + 18, (T + B) / 2); ctx.rotate(-Math.PI / 2);\n    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(opt.yLabel, 0, 0); ctx.restore();\n    // label change markers\n    for (const [t, text] of opt.marks) {\n      ctx.strokeStyle = '#8D9BB0'; ctx.setLineDash([4, 4]);\n      ctx.beginPath(); ctx.moveTo(tx(t), T); ctx.lineTo(tx(t), B); ctx.stroke(); ctx.setLineDash([]);\n      if (text) { ctx.fillStyle = '#5B6878'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText(text, tx(t) + 4, T + 2); }\n    }\n    ctx.save(); ctx.beginPath(); ctx.rect(L, T, R - L, B - T); ctx.clip();\n    for (const s of opt.series) {\n      if (s.band) {\n        ctx.fillStyle = s.bandColor;\n        let seg = [];\n        const flush = () => {\n          if (seg.length > 1) {\n            ctx.beginPath();\n            seg.forEach(([t, lo], i) => i ? ctx.lineTo(tx(t), vy(lo)) : ctx.moveTo(tx(t), vy(lo)));\n            for (let i = seg.length - 1; i >= 0; i--) ctx.lineTo(tx(seg[i][0]), vy(seg[i][2]));\n            ctx.closePath(); ctx.fill();\n          }\n          seg = [];\n        };\n        for (const p of s.band) { if (p[1] === null) flush(); else seg.push(p); }\n        flush();\n      }\n      ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 2; ctx.lineJoin = 'round';\n      ctx.beginPath(); let pen = false;\n      for (const [t, v] of s.pts) {\n        if (v === null || v === undefined) { pen = false; continue; }\n        if (!pen) { ctx.moveTo(tx(t), vy(v)); pen = true; } else ctx.lineTo(tx(t), vy(v));\n      }\n      ctx.stroke();\n    }\n    ctx.restore();\n    // legend\n    let lx = R;\n    ctx.font = '14px Barlow, Segoe UI, sans-serif'; ctx.textBaseline = 'middle';\n    for (const s of [...opt.series].reverse()) {\n      const w = ctx.measureText(s.name).width;\n      lx -= w; ctx.fillStyle = '#18222F'; ctx.textAlign = 'left'; ctx.fillText(s.name, lx, Y + 16);\n      lx -= 26; ctx.fillStyle = s.color; ctx.fillRect(lx, Y + 14, 20, 4); lx -= 18;\n    }\n    ctx.strokeStyle = '#B9C2CC'; ctx.lineWidth = 1; ctx.strokeRect(L, T, R - L, B - T);\n  }\n  function fmtAxisTime(t) {\n    if (t \u003c 120) return Math.round(t) + ' s';\n    if (t \u003c 7200) return (t / 60).toFixed(t % 60 ? 1 : 0) + ' min';\n    return (t / 3600).toFixed(1) + ' h';\n  }\n\n  function renderSessionChart() {\n    const W = 1600, P = 380, top = 90;\n    const c = document.createElement('canvas');\n    c.width = W; c.height = top + P * 3 + 20;\n    const ctx = c.getContext('2d');\n    ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, c.width, c.height);\n    const tMax = session.length ? session[session.length - 1].elapsed_s : 1;\n    const pts = k => session.map(r => [r.elapsed_s, r[k]]);\n    const lostSpans = [];\n    let start = null;\n    session.forEach((r, i) => {\n      if (r.status === 'LOST' && start === null) start = r.elapsed_s;\n      if ((r.status !== 'LOST' || i === session.length - 1) && start !== null) { lostSpans.push([start, r.elapsed_s]); start = null; }\n    });\n    const marks = [];\n    let prev;\n    session.forEach((r, i) => { if (i === 0 || r.label !== prev) { if (i > 0 || r.label) marks.push([r.elapsed_s, r.label]); prev = r.label; } });\n    const okVals = k => session.map(r => r[k]).filter(v => v !== null && isFinite(v));\n    const allR = okVals('rssi_smoothed_dbm').concat(okVals('rssi_raw_dbm'), okVals('peer_hears_me_dbm'));\n    const rMin = allR.length ? Math.floor((Math.min(...allR) - 5) / 10) * 10 : -100;\n    const rMax = allR.length ? Math.ceil((Math.max(...allR) + 5) / 10) * 10 : -30;\n    const dHigh = okVals('distance_high_m');\n    const dMax = dHigh.length ? niceStep(Math.max(...dHigh) / 4) * 4.5 : 10;\n    const lossV = okVals('packet_loss_pct');\n    const lMax = Math.max(5, lossV.length ? Math.ceil(Math.max(...lossV) / 5) * 5 : 5);\n\n    ctx.fillStyle = '#18222F'; ctx.font = '600 30px Chakra Petch, Barlow, Segoe UI, sans-serif';\n    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';\n    ctx.fillText('ESP-NOW signal session', 30, 46);\n    ctx.font = '16px Barlow, Segoe UI, sans-serif'; ctx.fillStyle = '#5B6878';\n    ctx.fillText((sessionT0 ? sessionT0.toLocaleString() : '') + '   |   ' + session.length + ' readings over ' + fmtDur(tMax) +\n                 '   |   shaded = no signal, dashed = test label change', 30, 74);\n\n    plotPanel(ctx, 0, top, W, P, {\n      title: 'Signal strength', yLabel: 'dBm', tMax, yRange: [rMin, rMax], lostSpans, marks,\n      series: [{ name: 'Raw (window avg)', color: '#A9BCEB', width: 1.2, pts: pts('rssi_raw_dbm') },\n               { name: 'This board hears peer (smoothed)', color: '#2457D6', width: 2.4, pts: pts('rssi_smoothed_dbm') },\n               { name: 'Peer hears this board', color: '#D9822B', width: 1.6, pts: pts('peer_hears_me_dbm') }]\n    });\n    plotPanel(ctx, 0, top + P, W, P, {\n      title: 'Estimated distance', yLabel: 'meters', tMax, yRange: [0, dMax], lostSpans, marks,\n      series: [{ name: 'Estimate (band = likely range)', color: '#23865F', width: 2.4, pts: pts('est_distance_m'),\n                 band: session.map(r => [r.elapsed_s, r.distance_low_m, r.distance_high_m]), bandColor: 'rgba(35,134,95,0.15)' }]\n    });\n    plotPanel(ctx, 0, top + 2 * P, W, P, {\n      title: 'Packet loss (cumulative)', yLabel: 'percent', tMax, yRange: [0, lMax], lostSpans, marks,\n      series: [{ name: 'Packet loss', color: '#C2413A', width: 2.2, pts: pts('packet_loss_pct') }]\n    });\n    return c;\n  }\n\n  function stats(a) {\n    if (!a.length) return null;\n    const m = a.reduce((x, y) => x + y, 0) / a.length;\n    const sd = a.length > 1 ? Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / (a.length - 1)) : 0;\n    return { n: a.length, mean: m, sd, min: Math.min(...a), max: Math.max(...a) };\n  }\n  const esc = t => String(t).replace(/[&\u003c>\"]/g, ch => ({ '&': '&amp;', '\u003c': '&lt;', '>': '&gt;', '\"': '&quot;' }[ch]));\n  const f1 = v => (v === null || v === undefined || !isFinite(v)) ? '' : (+v).toFixed(1);\n\n  function buildReport() {\n    const img = renderSessionChart().toDataURL('image/png');\n    const csv = buildCsv();\n    const ok = session.filter(r => r.status === 'OK');\n    const sR = stats(ok.map(r => r.rssi_smoothed_dbm));\n    const sP = stats(ok.map(r => r.peer_hears_me_dbm).filter(v => v !== null));\n    const sD = stats(ok.map(r => r.est_distance_m));\n    const last = session[session.length - 1];\n    const labels = [...new Set(session.map(r => r.label))];\n    const labelRows = labels.map(lb => {\n      const rows = session.filter(r => r.label === lb);\n      const o = rows.filter(r => r.status === 'OK');\n      const s1 = stats(o.map(r => r.rssi_smoothed_dbm)), s2 = stats(o.map(r => r.est_distance_m));\n      return '\u003ctr>\u003ctd>' + (lb ? esc(lb) : '\u003cem>(no label)\u003c/em>') + '\u003c/td>\u003ctd>' + rows.length + '\u003c/td>\u003ctd>' +\n        (rows.length - o.length) + '\u003c/td>\u003ctd>' + (s1 ? f1(s1.mean) : '') + '\u003c/td>\u003ctd>' + (s1 ? f1(s1.sd) : '') +\n        '\u003c/td>\u003ctd>' + (s1 ? f1(s1.min) + ' / ' + f1(s1.max) : '') + '\u003c/td>\u003ctd>' + (s2 ? s2.mean.toFixed(2) : '') + '\u003c/td>\u003c/tr>';\n    }).join('');\n    const dataRows = session.map(r => '\u003ctr>' + CSV_COLS.map(c => '\u003ctd>' + esc(csvCell(r[c])) + '\u003c/td>').join('') + '\u003c/tr>').join('');\n    const csvHref = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);\n    return `\u003c!doctype html>\u003chtml lang=\"en\">\u003chead>\u003cmeta charset=\"utf-8\">\n\u003cmeta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\u003ctitle>ESP-NOW session ${stamp()}\u003c/title>\n\u003cstyle>\n body{font-family:Barlow,\"Segoe UI\",system-ui,sans-serif;color:#18222F;background:#fff;margin:0;padding:28px;line-height:1.45}\n h1{margin:0 0 4px;font-size:1.7rem} h2{margin:32px 0 10px;font-size:1.2rem}\n .muted{color:#5B6878} img{max-width:100%;border:1px solid #D3D9E0;border-radius:10px}\n table{border-collapse:collapse;font-size:.88rem;font-variant-numeric:tabular-nums}\n th,td{border:1px solid #D3D9E0;padding:5px 9px;text-align:right;white-space:nowrap} th{background:#EEF1F4}\n td:first-child,th:first-child{text-align:left}\n .scroll{overflow:auto;max-height:70vh;border:1px solid #D3D9E0;border-radius:8px}\n .scroll table{border:0} .scroll th{position:sticky;top:0}\n a.btn{display:inline-block;background:#2457D6;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:600}\n\u003c/style>\u003c/head>\u003cbody>\n\u003ch1>ESP-NOW signal session\u003c/h1>\n\u003cp class=\"muted\">Started ${esc(sessionT0.toLocaleString())} &middot; ${session.length} readings over ${fmtDur(last.elapsed_s)} &middot;\nthis board ${esc(last.this_board_mac || 'unknown')} &middot; peer ${esc(last.peer_mac || 'unknown')}\u003c/p>\n\u003ch2>Summary\u003c/h2>\n\u003ctable>\n\u003ctr>\u003cth>Measure\u003c/th>\u003cth>Mean\u003c/th>\u003cth>Std dev\u003c/th>\u003cth>Min\u003c/th>\u003cth>Max\u003c/th>\u003c/tr>\n\u003ctr>\u003ctd>This board hears peer (dBm)\u003c/td>\u003ctd>${sR ? f1(sR.mean) : ''}\u003c/td>\u003ctd>${sR ? f1(sR.sd) : ''}\u003c/td>\u003ctd>${sR ? f1(sR.min) : ''}\u003c/td>\u003ctd>${sR ? f1(sR.max) : ''}\u003c/td>\u003c/tr>\n\u003ctr>\u003ctd>Peer hears this board (dBm)\u003c/td>\u003ctd>${sP ? f1(sP.mean) : ''}\u003c/td>\u003ctd>${sP ? f1(sP.sd) : ''}\u003c/td>\u003ctd>${sP ? f1(sP.min) : ''}\u003c/td>\u003ctd>${sP ? f1(sP.max) : ''}\u003c/td>\u003c/tr>\n\u003ctr>\u003ctd>Estimated distance (m)\u003c/td>\u003ctd>${sD ? sD.mean.toFixed(2) : ''}\u003c/td>\u003ctd>${sD ? sD.sd.toFixed(2) : ''}\u003c/td>\u003ctd>${sD ? sD.min.toFixed(2) : ''}\u003c/td>\u003ctd>${sD ? sD.max.toFixed(2) : ''}\u003c/td>\u003c/tr>\n\u003ctr>\u003ctd>Readings with no signal\u003c/td>\u003ctd colspan=\"4\">${session.length - ok.length}\u003c/td>\u003c/tr>\n\u003ctr>\u003ctd>Final packet loss\u003c/td>\u003ctd colspan=\"4\">${last.packet_loss_pct !== null ? f1(last.packet_loss_pct) + '%' : ''}\u003c/td>\u003c/tr>\n\u003ctr>\u003ctd>Calibration at end\u003c/td>\u003ctd colspan=\"4\">signal at 1 m ${last.cal_rssi_1m_dbm} dBm, environment factor ${last.cal_env_factor}\u003c/td>\u003c/tr>\n\u003c/table>\n\u003ch2>By test label\u003c/h2>\n\u003ctable>\u003ctr>\u003cth>Label\u003c/th>\u003cth>Readings\u003c/th>\u003cth>No signal\u003c/th>\u003cth>Mean dBm\u003c/th>\u003cth>Std dev\u003c/th>\u003cth>Min / max dBm\u003c/th>\u003cth>Mean distance (m)\u003c/th>\u003c/tr>${labelRows}\u003c/table>\n\u003ch2>Graphs\u003c/h2>\n\u003cimg src=\"${img}\" alt=\"Signal strength, estimated distance and packet loss over the session\">\n\u003ch2>All data\u003c/h2>\n\u003cp>\u003ca class=\"btn\" href=\"${csvHref}\" download=\"espnow_session_${stamp()}.csv\">Download this data as CSV\u003c/a>\u003c/p>\n\u003cdiv class=\"scroll\">\u003ctable>\u003ctr>${CSV_COLS.map(c => '\u003cth>' + c + '\u003c/th>').join('')}\u003c/tr>${dataRows}\u003c/table>\u003c/div>\n\u003c/body>\u003c/html>`;\n  }\n\n  // ---------- Live save (writes CSV to a file as data arrives; Chrome/Edge) ----------\n  const live = { handle: null, bytes: 0, pending: [], busy: false, timer: null };\n  async function liveFlush() {\n    if (!live.handle || live.busy || !live.pending.length) return;\n    live.busy = true;\n    const text = live.pending.join(''); live.pending = [];\n    try {\n      const w = await live.handle.createWritable({ keepExistingData: true });\n      await w.seek(live.bytes); await w.write(text); await w.close();\n      live.bytes += new TextEncoder().encode(text).length;\n      savedCount = session.length;\n      $('liveInfo').textContent = 'Live-saving to ' + live.handle.name + ' (' + session.length + ' readings written).';\n    } catch (e) {\n      live.pending.unshift(text);\n      $('liveInfo').textContent = 'Could not write to the file: ' + e.message;\n    }\n    live.busy = false;\n  }\n  async function toggleLive() {\n    if (live.handle) {\n      await liveFlush();\n      clearInterval(live.timer);\n      $('liveInfo').textContent = 'Stopped live-saving. ' + live.handle.name + ' has everything up to now.';\n      live.handle = null; $('btnLive').textContent = 'Live-save to file';\n      updateSessionInfo();\n      return;\n    }\n    if (!('showSaveFilePicker' in window)) {\n      $('liveInfo').textContent = 'Live-saving needs Chrome or Edge. You can still use the Save buttons above.';\n      return;\n    }\n    try {\n      live.handle = await window.showSaveFilePicker({\n        suggestedName: 'espnow_live_' + stamp() + '.csv',\n        types: [{ description: 'CSV file', accept: { 'text/csv': ['.csv'] } }]\n      });\n    } catch (e) { return; }  // picker closed\n    live.bytes = 0;\n    live.pending = [CSV_COLS.join(',') + '\\n', ...session.map(csvLine)];\n    live.timer = setInterval(liveFlush, 3000);\n    $('btnLive').textContent = 'Stop live-saving';\n    await liveFlush();\n  }\n\n  $('btnCsv').addEventListener('click', () =>\n    download('espnow_session_' + stamp() + '.csv', new Blob([buildCsv()], { type: 'text/csv' })));\n  $('btnPng').addEventListener('click', () =>\n    renderSessionChart().toBlob(b => download('espnow_graphs_' + stamp() + '.png', b), 'image/png'));\n  $('btnReport').addEventListener('click', () =>\n    download('espnow_report_' + stamp() + '.html', new Blob([buildReport()], { type: 'text/html' })));\n  $('btnLive').addEventListener('click', toggleLive);\n  $('btnClear').addEventListener('click', () => {\n    if (session.length - savedCount > 0 && !confirm('Clear ' + session.length + ' readings? Some have not been saved.')) return;\n    session.length = 0; sessionT0 = null; savedCount = 0;\n    if (live.handle) { live.pending = []; }\n    infoTimer = 0; updateSessionInfo();\n  });\n  window.addEventListener('beforeunload', e => {\n    if (session.length - savedCount > 0 && !live.handle) { e.preventDefault(); e.returnValue = ''; }\n  });\n\n  function updateReadouts() {\n    const has = !S.lost && S.rssi !== null;\n    $('btnCal').disabled = !has;\n    if (has) {\n      const d = dist(S.rssi), s = sigma();\n      $('distance').innerHTML = fmtM(d) + '\u003csmall>m\u003c/small>';\n      $('range').textContent = 'Likely between ' + fmtM(dist(S.rssi + s)) + ' and ' + fmtM(dist(S.rssi - s)) + ' m';\n      $('rRssi').textContent = S.rssi.toFixed(1) + ' dBm';\n      $('rPeer').textContent = S.peer !== null ? S.peer + ' dBm' : '--';\n      const [q, cls] = quality(S.rssi);\n      $('rQuality').textContent = q;\n      $('rQuality').style.color = css('--' + cls);\n      $('rLoss').textContent = S.loss !== null ? S.loss.toFixed(1) + '%' : '--';\n    } else {\n      $('distance').innerHTML = '--\u003csmall>m\u003c/small>';\n      $('range').textContent = S.mode === 'idle'\n        ? 'Waiting for the other board'\n        : 'No signal from the other board. Check that it is powered and within range.';\n      $('rRssi').textContent = '--';\n      $('rPeer').textContent = '--';\n      $('rQuality').textContent = S.mode === 'idle' ? '--' : 'No signal';\n      $('rQuality').style.color = S.mode === 'idle' ? '' : css('--bad');\n    }\n    $('rMyMac').textContent = S.myMac || '--';\n    $('rPeerMac').textContent = S.peerMac || '--';\n  }\n\n  // ---------------- Drawing ----------------\n  function fitCanvas(c, ctx) {\n    const dpr = window.devicePixelRatio || 1;\n    const w = c.clientWidth, h = c.clientHeight;\n    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {\n      c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);\n    }\n    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);\n    return [w, h];\n  }\n\n  function circle(ctx, x, y, r) { ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, Math.PI * 2); }\n\n  function drawRadar(now) {\n    const [w, h] = fitCanvas(radar, rctx);\n    const ctx = rctx;\n    ctx.clearRect(0, 0, w, h);\n    const ink = css('--ink'), muted = css('--muted'), line = css('--line'), signal = css('--signal');\n    const cx = w / 2, cy = h / 2, R = Math.max(10, Math.min(w, h) / 2 - 26);\n    const has = !S.lost && S.rssi !== null;\n\n    let d, dn, df;\n    if (has) {\n      const s = sigma();\n      d = dist(S.rssi); dn = dist(S.rssi + s); df = dist(S.rssi - s);\n      const target = SCALES.find(x => x >= df * 1.1) || SCALES[SCALES.length - 1];\n      viewScale += (target - viewScale) * (reduceMotion ? 1 : 0.08);\n    }\n\n    // Range rings\n    ctx.lineWidth = 1;\n    ctx.font = '500 12px ' + css('--display');\n    ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';\n    for (let k = 1; k \u003c= 4; k++) {\n      const r = R * k / 4;\n      ctx.strokeStyle = line;\n      circle(ctx, cx, cy, r); ctx.stroke();\n      ctx.fillStyle = muted;\n      ctx.fillText(fmtM(viewScale * k / 4) + ' m', cx + 5, cy - r - 3);\n    }\n    ctx.strokeStyle = line;\n    ctx.beginPath();\n    ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);\n    ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);\n    ctx.stroke();\n\n    if (has) {\n      const rn = Math.min(R * dn / viewScale, R);\n      const rf = Math.min(R * df / viewScale, R);\n      const rd = Math.min(R * d / viewScale, R);\n\n      // Uncertainty band\n      ctx.beginPath();\n      ctx.arc(cx, cy, rf, 0, Math.PI * 2, false);\n      ctx.arc(cx, cy, rn, 0, Math.PI * 2, true);\n      ctx.fillStyle = signal; ctx.globalAlpha = 0.16; ctx.fill(); ctx.globalAlpha = 1;\n\n      // Packet pulse\n      if (!reduceMotion) {\n        const t = (now - S.lastPacket) / 700;\n        if (t >= 0 && t \u003c 1) {\n          ctx.strokeStyle = signal; ctx.lineWidth = 2;\n          ctx.globalAlpha = (1 - t) * 0.45;\n          circle(ctx, cx, cy, rd * t); ctx.stroke();\n          ctx.globalAlpha = 1;\n        }\n      }\n\n      // Estimated distance ring\n      ctx.strokeStyle = signal; ctx.lineWidth = 3;\n      circle(ctx, cx, cy, rd); ctx.stroke();\n\n      // Ring label\n      const label = '~' + fmtM(d) + ' m' + (d > viewScale ? ' (off scale)' : '');\n      ctx.font = '600 14px ' + css('--display');\n      const tw = ctx.measureText(label).width;\n      const ly = Math.min(cy + rd, h - 14);\n      ctx.fillStyle = css('--panel');\n      ctx.fillRect(cx - tw / 2 - 6, ly - 10, tw + 12, 20);\n      ctx.fillStyle = signal;\n      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';\n      ctx.fillText(label, cx, ly);\n    } else {\n      ctx.fillStyle = muted;\n      ctx.font = '500 15px ' + css('--body');\n      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';\n      const msg = S.mode === 'idle' ? 'Connect a board to start' : 'No signal from the other board';\n      ctx.fillText(msg, cx, cy - R / 2);\n    }\n\n    // This board\n    ctx.fillStyle = ink;\n    circle(ctx, cx, cy, 7); ctx.fill();\n    ctx.font = '500 13px ' + css('--body');\n    ctx.textAlign = 'center'; ctx.textBaseline = 'top';\n    ctx.fillText('This board', cx, cy + 12);\n  }\n\n  function drawHistory() {\n    const [w, h] = fitCanvas(hist, hctx);\n    const ctx = hctx;\n    ctx.clearRect(0, 0, w, h);\n    const muted = css('--muted'), line = css('--line'), signal = css('--signal');\n    const left = 58, top = 6, bottom = h - 6, right = w - 4;\n    const y = r => top + (bottom - top) * (-30 - Math.max(-100, Math.min(-30, r))) / 70;\n\n    ctx.font = '500 11px ' + css('--display');\n    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';\n    for (const g of [-40, -60, -80, -100]) {\n      ctx.strokeStyle = line; ctx.lineWidth = 1;\n      ctx.beginPath(); ctx.moveTo(left, y(g)); ctx.lineTo(right, y(g)); ctx.stroke();\n      ctx.fillStyle = muted; ctx.fillText(g + ' dBm', left - 6, y(g));\n    }\n\n    const step = (right - left) / (HISTORY_MAX - 1);\n    const offset = HISTORY_MAX - S.history.length;\n    ctx.strokeStyle = signal; ctx.lineWidth = 2; ctx.lineJoin = 'round';\n    ctx.beginPath();\n    let pen = false;\n    S.history.forEach((v, i) => {\n      const x = left + (offset + i) * step;\n      if (v === null) { pen = false; return; }\n      if (!pen) { ctx.moveTo(x, y(v)); pen = true; } else ctx.lineTo(x, y(v));\n    });\n    ctx.stroke();\n  }\n\n  function frame(now) {\n    // Flag a silent connection (board not printing)\n    if (S.mode === 'live' && S.lastLine && now - S.lastLine > 3000) {\n      setStatus('live', 'Connected, but no data is arriving. Press RST on the board.');\n    }\n    drawRadar(now);\n    drawHistory();\n    requestAnimationFrame(frame);\n  }\n\n  // ---------------- Web Serial ----------------\n  let port = null, reader = null, pipeDone = null;\n\n  async function connect() {\n    if (!('serial' in navigator)) {\n      setStatus('error', 'This browser cannot talk to USB boards. Open this file in Chrome or Edge.');\n      return;\n    }\n    await stopAll();\n    try {\n      port = await navigator.serial.requestPort();\n    } catch (e) {\n      return; // User closed the picker\n    }\n    try {\n      await port.open({ baudRate: 115200 });\n    } catch (e) {\n      port = null;\n      setStatus('error', 'Could not open the port. Close the VS Code Serial Monitor or any other program using the board, then try again.');\n      return;\n    }\n    S.mode = 'live';\n    S.lastLine = performance.now();\n    setStatus('live', 'Connected. Reading signal data.');\n    setButtons(true);\n    readLoop();\n  }\n\n  async function readLoop() {\n    const decoder = new TextDecoderStream();\n    pipeDone = port.readable.pipeTo(decoder.writable).catch(() => {});\n    reader = decoder.readable.getReader();\n    let buf = '';\n    try {\n      while (true) {\n        const { value, done } = await reader.read();\n        if (done) break;\n        buf += value;\n        let i;\n        while ((i = buf.indexOf('\\n')) >= 0) {\n          ingestLine(buf.slice(0, i).replace(/\\r$/, ''));\n          buf = buf.slice(i + 1);\n        }\n        if (S.mode === 'live' && $('status').dataset.state === 'live' &&\n            !/Reading/.test($('statusText').textContent)) {\n          setStatus('live', 'Connected. Reading signal data.');\n        }\n      }\n    } catch (e) {\n      setStatus('error', 'The board was disconnected. Plug it back in and connect again.');\n      S.mode = 'idle';\n      setButtons(false);\n    } finally {\n      try { reader.releaseLock(); } catch (e) {}\n    }\n  }\n\n  async function disconnectSerial() {\n    if (reader) { try { await reader.cancel(); } catch (e) {} }\n    if (pipeDone) { await pipeDone; }\n    if (port) { try { await port.close(); } catch (e) {} }\n    port = null; reader = null; pipeDone = null;\n  }\n\n  if ('serial' in navigator) {\n    navigator.serial.addEventListener('disconnect', e => {\n      if (port && e.target === port) {\n        setStatus('error', 'The board was unplugged. Plug it back in and connect again.');\n        S.mode = 'idle'; port = null;\n        setButtons(false);\n      }\n    });\n  }\n\n  // ---------------- Demo ----------------\n  let demoTimer = null;\n  function startDemo() {\n    stopAll().then(() => {\n      S.mode = 'demo';\n      setStatus('demo', 'Demo: simulated boards moving apart and back together.');\n      setButtons(true);\n      const t0 = performance.now();\n      let ema = null, seq = 0, lost = 0;\n      ingestLine('My MAC: 7C:DF:A1:00:00:01');\n      demoTimer = setInterval(() => {\n        const t = (performance.now() - t0) / 1000;\n        const trueD = 0.6 + 7 * (0.5 - 0.5 * Math.cos(t / 9)) + 9 * Math.max(0, Math.sin(t / 23)) ** 6;\n        const g = (Math.random() + Math.random() + Math.random() - 1.5) * 5;\n        const raw = -45 - 25 * Math.log10(trueD) + g;\n        seq += 5;\n        const ms = Math.round(performance.now() - t0);\n        if (raw \u003c -88) {\n          lost += 5;\n          ingestLine('DATA,' + ms + ',LOST,nan,nan,nan,nan,' + seq + ',' + lost);\n          ingestLine('No signal from peer (out of range or not powered)');\n          return;\n        }\n        if (raw \u003c -78 && Math.random() \u003c 0.3) lost += 1;\n        ema = ema === null ? raw : 0.7 * ema + 0.3 * raw;\n        const peer = Math.round(ema + (Math.random() - 0.5) * 6);\n        ingestLine('DATA,' + ms + ',OK,' + raw.toFixed(1) + ',' + ema.toFixed(2) + ',' + peer + ',' +\n          (100 * lost / (seq + lost)).toFixed(2) + ',' + seq + ',' + lost);\n        ingestLine('Peer 7C:DF:A1:12:34:56 | I hear peer: ' + ema.toFixed(1) +\n          ' dBm [###] Demo | Peer hears me: ' + peer + ' dBm | Loss: ' +\n          (100 * lost / (seq + lost)).toFixed(1) + '% | ~' + trueD.toFixed(1) + ' m');\n      }, 500);\n    });\n  }\n\n  // ---------------- Controls ----------------\n  function setButtons(running) {\n    $('btnStop').disabled = !running;\n  }\n\n  async function stopAll() {\n    if (demoTimer) { clearInterval(demoTimer); demoTimer = null; }\n    await disconnectSerial();\n    S.mode = 'idle'; S.lost = true; S.rssi = null; S.peer = null; S.loss = null;\n    S.myMac = null; S.peerMac = null; S.recent = []; S.history = []; S.hasData = false;\n    setButtons(false);\n    updateReadouts();\n  }\n\n  $('btnConnect').addEventListener('click', connect);\n  $('btnDemo').addEventListener('click', startDemo);\n  $('btnStop').addEventListener('click', async () => {\n    await stopAll();\n    setStatus('idle', 'Stopped. Connect a board or run the demo.');\n  });\n\n  $('sRef').addEventListener('input', e => {\n    S.ref = parseFloat(e.target.value);\n    $('oRef').textContent = S.ref + ' dBm';\n    updateReadouts();\n  });\n  $('sN').addEventListener('input', e => {\n    S.n = parseFloat(e.target.value);\n    $('oN').textContent = S.n.toFixed(1);\n    updateReadouts();\n  });\n  $('btnCal').addEventListener('click', () => {\n    const a = S.recent.slice(-10);\n    if (!a.length) return;\n    const m = Math.round(a.reduce((x, y) => x + y, 0) / a.length);\n    S.ref = Math.max(-90, Math.min(-20, m));\n    $('sRef').value = S.ref;\n    $('oRef').textContent = S.ref + ' dBm';\n    updateReadouts();\n  });\n\n  updateReadouts();\n  requestAnimationFrame(frame);\n})();\n\u003c/script>\n\u003c/body>\n\u003c/html>\n"}};
+const TAGS = { GPS: "gps", IMU: "imu", LORA: "lora", ESPNOW: "espnow" };
+const $ = (id) => document.getElementById(id);
+
+let port = null, reader = null, writer = null, pipeDone = null;
+let writeChain = Promise.resolve();
+const lastSeen = {};
+const frames = {};
+const show = { SYS: true, GPS: true, IMU: true, LORA: true, ESPNOW: true, other: true };
+
+// ---------- Tabs ----------
+function addTab(id, label) {
+  const b = document.createElement("button");
+  b.innerHTML = `<span class="dot" id="dot-${id}"></span>${label}`;
+  b.onclick = () => selectTab(id);
+  b.id = "tab-" + id;
+  $("tabs").appendChild(b);
+}
+addTab("home", "Home");
+$("dot-home").remove();
+for (const [mod, c] of Object.entries(CHILDREN)) {
+  addTab(mod, c.label);
+  const f = document.createElement("iframe");
+  f.title = c.label + " dashboard";
+  f.srcdoc = c.html;
+  $("views").appendChild(f);
+  frames[mod] = f;
+}
+addTab("console", "Console");
+$("dot-console").remove();
+const saveTabBtn = document.createElement("button");
+saveTabBtn.id = "saveTab";
+$("tabs").appendChild(saveTabBtn);
+let currentTab = "home";
+
+function selectTab(id) {
+  for (const b of $("tabs").children) b.classList.toggle("active", b.id === "tab-" + id);
+  for (const [mod, f] of Object.entries(frames)) f.classList.toggle("active", mod === id);
+  $("consoleView").classList.toggle("active", id === "console");
+  $("homeView").classList.toggle("active", id === "home");
+  if (frames[id]) frames[id].contentWindow.postMessage({ me74: 1, kind: "shown" }, "*");
+  currentTab = id;
+  updateSaveButtons();
+  if (id === "home") drawHome();
+}
+
+// ---------- Run controls (go / stop / only) ----------
+const modState = {};   // mod -> {run, hw}
+for (const [mod, c] of Object.entries(CHILDREN)) {
+  const d = document.createElement("div");
+  d.className = "mod";
+  d.innerHTML = `<span class="name" title="Open tab">${c.label}</span><span class="state" id="st-${mod}">--</span>` +
+                `<button id="tg-${mod}" disabled>Start</button>` +
+                `<button id="only-${mod}" disabled title="Run only this module">Only</button>`;
+  d.querySelector(".name").onclick = () => selectTab(mod);
+  $("mods").appendChild(d);
+}
+function runCmd(cmd) { send(cmd); consoleLine("> " + cmd, "SYS"); }
+for (const mod of Object.keys(CHILDREN)) {
+  $("tg-" + mod).onclick = () => runCmd((modState[mod] && modState[mod].run ? "stop " : "go ") + mod);
+  $("only-" + mod).onclick = () => { runCmd("only " + mod); selectTab(mod); };
+}
+$("btnGoAll").onclick = () => runCmd("go");
+$("btnStopAll").onclick = () => runCmd("stop");
+
+function onState(body) {
+  // STATE lora=1 espnow=1 imu=1 gps=1 lora_hw=1 imu_hw=0 gps_hw=1
+  const kv = Object.fromEntries(body.split(/\s+/).slice(1).map((p) => p.split("=")));
+  for (const mod of Object.keys(CHILDREN)) {
+    if (!(mod in kv)) continue;
+    const hw = (mod + "_hw") in kv ? kv[mod + "_hw"] === "1" : true;
+    modState[mod] = { run: kv[mod] === "1", hw };
+  }
+  renderRun();
+}
+function renderRun() {
+  const on = !!port;
+  $("btnGoAll").disabled = $("btnStopAll").disabled = !on;
+  for (const mod of Object.keys(CHILDREN)) {
+    const st = modState[mod], el = $("st-" + mod);
+    $("tg-" + mod).disabled = $("only-" + mod).disabled = !on;
+    $("tg-" + mod).textContent = st && st.run ? "Stop" : "Start";
+    if (!on || !st) { el.textContent = "--"; el.className = "state"; continue; }
+    if (st.run && !st.hw) { el.textContent = "No sensor"; el.className = "state warn"; }
+    else if (st.run) { el.textContent = "Running"; el.className = "state run"; }
+    else { el.textContent = "Stopped"; el.className = "state"; }
+  }
+}
+
+// ---------- Recording: every module's data, kept for the CSV files ----------
+const REC = {
+  home:   { label: "Overview", file: "overview",
+            cols: ["pc_time", "elapsed_s", "tape_m", "gps_dist_m", "gps_state", "gps_sats", "gps_hdop",
+                   "lora_dist_m", "lora_rssi_dbm", "lora_snr_db", "espnow_dist_m", "espnow_rssi_dbm",
+                   "espnow_loss_pct", "imu_accel_total", "imu_motion_accel", "imu_horizontal", "imu_vertical"], rows: [] },
+  gps:    { label: "GPS", file: "gps",
+            cols: ["pc_time", "elapsed_s", "type", "state", "sats", "hdop", "lat", "lon", "speed_mps", "utc",
+                   "origin_lat", "origin_lon", "dist_m", "true_m", "gps_m", "error_m", "samples", "tape_m"], rows: [] },
+  imu:    { label: "IMU", file: "imu",
+            cols: ["pc_time", "elapsed_s", "t_us", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
+                   "roll_deg", "pitch_deg", "heading_deg", "dt_ms", "overruns",
+                   "accel_total", "motion_accel", "horizontal", "vertical", "tape_m"], rows: [] },
+  lora:   { label: "LoRa", file: "lora",
+            cols: ["pc_time", "elapsed_s", "type", "from_node", "rssi_dbm", "snr_db", "firmware_dist_m",
+                   "ref_dist_m", "ref_rssi_dbm", "tape_m"], rows: [] },
+  espnow: { label: "ESP-NOW", file: "espnow",
+            cols: ["pc_time", "elapsed_s", "board_ms", "status", "rssi_raw_dbm", "rssi_smoothed_dbm",
+                   "peer_hears_me_dbm", "packet_loss_pct", "packets_rx", "packets_missed", "est_distance_m",
+                   "cal_rssi_1m_dbm", "cal_env_factor", "tape_m"], rows: [] },
+  console: { label: "Console", file: "console_log", cols: ["pc_time", "line"], rows: [] },
+};
+for (const m of ["gps", "imu", "lora", "espnow"]) if (!(m in CHILDREN)) delete REC[m];
+const HAS = (m) => m in CHILDREN;
+let recT0 = null;
+const live = { gps: {}, lora: {}, espnow: {}, imu: {} };
+const loraDev = { refDist: null, refRssi: null, calibrated: false };
+let loraPending = null;
+const DEG = 180 / Math.PI, G0 = 9.80665;
+
+function stamp() {
+  const now = new Date();
+  if (!recT0) recT0 = now;
+  return [now.toISOString(), ((now - recT0) / 1000).toFixed(3)];
+}
+const num = (v) => { const x = parseFloat(v); return isFinite(x) ? x : null; };
+const tapeVal = () => num($("tape").value);
+function push(mod, row) { REC[mod].rows.push([...stamp(), ...row]); }
+
+function espnowDist(rssi) {
+  const ref = num($("enRef").value) ?? -45, n = num($("enN").value) ?? 2.5;
+  return Math.pow(10, (ref - rssi) / (10 * n));
+}
+
+// Sensor -> world rotation (same convention as the firmware), for gravity removal
+function motionAccel(ax, ay, az, roll, pitch, heading) {
+  const f = roll / DEG, th = pitch / DEG, ps = -heading / DEG;
+  const cf = Math.cos(f), sf = Math.sin(f), ct = Math.cos(th), st = Math.sin(th), cp = Math.cos(ps), sp = Math.sin(ps);
+  const wx = cp * ct * ax + (cp * st * sf - sp * cf) * ay + (cp * st * cf + sp * sf) * az;
+  const wy = sp * ct * ax + (sp * st * sf + cp * cf) * ay + (sp * st * cf - cp * sf) * az;
+  const wz = -st * ax + ct * sf * ay + ct * cf * az - G0;
+  return { total: Math.hypot(ax, ay, az), lin: Math.hypot(wx, wy, wz), hor: Math.hypot(wx, wy), ver: wz };
+}
+
+function recordLine(mod, body) {
+  const now = performance.now();
+  if (mod === "gps") {
+    let m; try { m = JSON.parse(body); } catch (e) { return; }
+    if (m.type === "status") {
+      live.gps = { t: now, dist: m.dist, state: m.state, sats: m.sats, hdop: m.hdop, origin: m.origin_lat != null };
+      push("gps", ["status", m.state, m.sats, m.hdop, m.lat, m.lon, m.speed, m.utc, m.origin_lat, m.origin_lon, m.dist,
+                   "", "", "", "", tapeVal()]);
+    } else if (m.type === "result") {
+      push("gps", ["result_" + m.mode + (m.ok ? "" : "_failed"), "", "", "", m.lat, m.lon, "", "", "", "", "",
+                   m.true_m, m.gps_m, m.error_m, m.samples, tapeVal()]);
+    }
+  } else if (mod === "imu") {
+    let ax, ay, az, roll, pitch, heading, rest;
+    if (body.startsWith("LOG,")) {
+      const p = body.split(",");
+      if (p.length !== 16) return;
+      const n = p.slice(1).map(Number);
+      if (n.some(Number.isNaN)) return;
+      [ax, ay, az] = [n[1], n[2], n[3]]; [roll, pitch, heading] = [n[10], n[11], n[12]];
+      rest = p.slice(1);
+    } else if (body.startsWith("Ax:")) {
+      const kv = Object.fromEntries(body.split(",").map((x) => x.split(":")));
+      [ax, ay, az, roll, pitch, heading] = ["Ax", "Ay", "Az", "Roll", "Pitch", "Heading"].map((k) => num(kv[k]));
+      if ([ax, ay, az, roll, pitch, heading].some((v) => v === null)) return;
+      rest = ["", ax, ay, az, "", "", "", "", "", "", roll, pitch, heading, num(kv.dt_ms), num(kv.Overruns)];
+    } else return;
+    const a = motionAccel(ax, ay, az, roll, pitch, heading);
+    live.imu = { t: now, ...a, roll, pitch, heading };
+    push("imu", [...rest, a.total.toFixed(4), a.lin.toFixed(4), a.hor.toFixed(4), a.ver.toFixed(4), tapeVal()]);
+  } else if (mod === "lora") {
+    let m;
+    const r = (s) => new RegExp("^" + s.replace(/#/g, "(-?\\d+(?:\\.\\d+)?)"));
+    if ((m = body.match(r("RX from node #")))) { loraPending = { from: +m[1] }; return; }
+    if (loraPending && (m = body.match(r("RSSI: # dBm")))) { loraPending.rssi = +m[1]; return; }
+    if (loraPending && (m = body.match(r("SNR: # dB")))) { loraPending.snr = +m[1]; return; }
+    const finish = (dist) => {
+      const p = loraPending; loraPending = null;
+      if (p.rssi == null) return;
+      live.lora = { t: now, rssi: p.rssi, snr: p.snr, dist };
+      push("lora", ["packet", p.from, p.rssi, p.snr, dist, loraDev.refDist, loraDev.refRssi, tapeVal()]);
+    };
+    if (loraPending && (m = body.match(r("Distance: # m")))) { finish(+m[1]); return; }
+    if (loraPending && body === "Not calibrated.") { finish(null); return; }
+    if ((m = body.match(r("Known distance: # m")))) { loraDev.refDist = +m[1]; loraDev.calibrated = false; return; }
+    if ((m = body.match(r("Calibration: #/# RSSI=#")))) {
+      live.lora = { ...live.lora, t: now, rssi: +m[3], calibrating: `${m[1]}/${m[2]}` };
+      push("lora", ["calibration", "", +m[3], "", "", loraDev.refDist, "", tapeVal()]);
+      return;
+    }
+    if (body === "CALIBRATION COMPLETE") { loraDev.calibrated = true; live.lora.calibrating = null; return; }
+    if ((m = body.match(r("Reference RSSI: #")))) { loraDev.refRssi = +m[1]; return; }
+    if ((m = body.match(r("Reference distance: #")))) { loraDev.refDist = +m[1]; return; }
+    if ((m = body.match(/^Calibrated: (YES|NO)/))) { loraDev.calibrated = m[1] === "YES"; return; }
+  } else if (mod === "espnow") {
+    if (!body.startsWith("DATA,")) return;
+    const f = body.split(",");
+    if (f.length < 9) return;
+    const smoothed = num(f[4]);
+    const dist = smoothed === null ? null : espnowDist(smoothed);
+    live.espnow = { t: now, status: f[2], rssi: smoothed, peer: num(f[5]), loss: num(f[6]), dist };
+    push("espnow", [num(f[1]), f[2], num(f[3]), smoothed, num(f[5]), num(f[6]), num(f[7]), num(f[8]),
+                    dist === null ? null : dist.toFixed(3), num($("enRef").value), num($("enN").value), tapeVal()]);
+  }
+}
+
+// Overview: one row per second with every technology side by side
+const history = [];   // {t, gps, lora, espnow}
+function fresh(mod, ms = 3000) { return live[mod].t && performance.now() - live[mod].t < ms; }
+const OV = [
+  ["gps_dist_m", "gps", (s) => s.g.dist], ["gps_state", "gps", (s) => s.g.state],
+  ["gps_sats", "gps", (s) => s.g.sats], ["gps_hdop", "gps", (s) => s.g.hdop],
+  ["lora_dist_m", "lora", (s) => s.l.dist], ["lora_rssi_dbm", "lora", (s) => s.l.rssi], ["lora_snr_db", "lora", (s) => s.l.snr],
+  ["espnow_dist_m", "espnow", (s) => s.e.dist == null ? null : s.e.dist.toFixed(3)],
+  ["espnow_rssi_dbm", "espnow", (s) => s.e.rssi], ["espnow_loss_pct", "espnow", (s) => s.e.loss],
+  ["imu_accel_total", "imu", (s) => s.i.total?.toFixed(4)], ["imu_motion_accel", "imu", (s) => s.i.lin?.toFixed(4)],
+  ["imu_horizontal", "imu", (s) => s.i.hor?.toFixed(4)], ["imu_vertical", "imu", (s) => s.i.ver?.toFixed(4)],
+].filter((c) => HAS(c[1]));
+REC.home.cols = ["pc_time", "elapsed_s", "tape_m", ...OV.map((c) => c[0])];
+setInterval(() => {
+  if (!port) return;
+  const snap = {
+    g: fresh("gps") ? live.gps : {}, l: fresh("lora", 8000) ? live.lora : {},
+    e: fresh("espnow") && live.espnow.status === "OK" ? live.espnow : {}, i: fresh("imu") ? live.imu : {},
+  };
+  push("home", [tapeVal(), ...OV.map((c) => c[2](snap) ?? "")]);
+  history.push({ t: Date.now(), gps: snap.g.dist ?? null, lora: snap.l.dist ?? null, espnow: snap.e.dist ?? null, tape: tapeVal() });
+  while (history.length && history[0].t < Date.now() - 300000) history.shift();
+}, 1000);
+
+// ---------- Home page ----------
+const fmtM = (v) => (v == null ? "--" : v < 10 ? v.toFixed(2) : v.toFixed(1));
+function ago(mod) {
+  if (!live[mod].t) return "no data";
+  const s = (performance.now() - live[mod].t) / 1000;
+  return s < 1.5 ? "updated just now" : `updated ${s.toFixed(0)} s ago`;
+}
+function stateText(mod) {
+  const st = modState[mod];
+  if (!port || !st) return ["", ""];
+  if (!st.run) return ["Stopped", ""];
+  if (!st.hw) return ["No sensor", "warn"];
+  return ["Running", "run"];
+}
+function renderHome() {
+  for (const mod of Object.keys(CHILDREN)) {
+    const [t, cls] = stateText(mod);
+    const el = $("hs-" + mod);
+    el.textContent = t; el.className = "state " + cls;
+    el.style.cssText = "text-transform:none;letter-spacing:0;font-size:12px;margin-left:auto;font-weight:600;color:" +
+      (cls === "run" ? "var(--ok)" : cls === "warn" ? "var(--warn)" : "var(--muted)");
+    $("ha-" + mod).textContent = ago(mod);
+  }
+  if (HAS("gps")) {
+  const g = live.gps, gOk = fresh("gps");
+  $("hd-gps").innerHTML = (gOk && g.dist != null ? fmtM(g.dist) : "--") + "<small>m</small>";
+  $("hx-gps").textContent = gOk ? `${g.state === "fix" ? "Fix" : g.state}, ${g.sats ?? 0} satellites` +
+    (g.state === "fix" ? `, HDOP ${Number(g.hdop).toFixed(2)}` : "") : "--";
+  $("hh-gps").textContent = !gOk ? "" : g.state === "no_data" ? "No data from the GPS module" :
+    g.state !== "fix" ? "Waiting for a fix (go outside)" : !g.origin ? "Set an origin in the GPS tab" : "";
+  }
+  if (HAS("lora")) {
+  const l = live.lora, lOk = fresh("lora", 8000);
+  $("hd-lora").innerHTML = (lOk && l.dist != null ? fmtM(l.dist) : "--") + "<small>m</small>";
+  $("hx-lora").textContent = lOk ? `RSSI ${l.rssi} dBm` + (l.snr != null ? ` · SNR ${l.snr.toFixed(1)} dB` : "") : "--";
+  $("hh-lora").textContent = l.calibrating ? `Calibrating ${l.calibrating}...` :
+    lOk && l.dist == null ? "Not calibrated: calibrate in the LoRa tab" : "";
+  }
+  if (HAS("espnow")) {
+  const e = live.espnow, eOk = fresh("espnow");
+  const eLive = eOk && e.status === "OK";
+  $("hd-espnow").innerHTML = (eLive && e.rssi != null ? fmtM(espnowDist(e.rssi)) : "--") + "<small>m</small>";
+  $("hx-espnow").textContent = !eOk ? "--" : e.status !== "OK" ? "No signal from the other board" :
+    `RSSI ${e.rssi?.toFixed(1)} dBm · peer hears ${e.peer ?? "--"} dBm · loss ${e.loss?.toFixed(1)}%`;
+  }
+  if (HAS("imu")) {
+  const i = live.imu, iOk = fresh("imu");
+  $("hd-imu").innerHTML = (iOk ? i.lin.toFixed(2) : "--") + "<small>m/s&sup2;</small>";
+  $("hx-imu").textContent = iOk ? `Total ${i.total.toFixed(2)} m/s² · horizontal ${i.hor.toFixed(2)} · vertical ${i.ver >= 0 ? "+" : ""}${i.ver.toFixed(2)}` : "--";
+  $("hh-imu").textContent = "";
+  }
+  if (currentTab === "home") drawHome();
+}
+setInterval(renderHome, 500);
+
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function drawHome() {
+  const c = $("homeChart"), dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (!w || !h) return;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const L = 48, R = 10, T = 8, B = 24, now = Date.now(), span = 300000;
+  const series = [["gps", "#2F80ED"], ["lora", "#E07B39"], ["espnow", "#8E5CF6"], ["tape", cssVar("--muted")]]
+    .filter(([k]) => k === "tape" || HAS(k));
+  let max = 1;
+  for (const p of history) for (const [k] of series) if (p[k] != null && isFinite(p[k])) max = Math.max(max, p[k]);
+  max = max * 1.15;
+  const X = (t) => L + (w - L - R) * (1 - (now - t) / span), Y = (v) => T + (h - T - B) * (1 - v / max);
+  ctx.font = "11px -apple-system, Segoe UI, sans-serif"; ctx.fillStyle = cssVar("--muted"); ctx.strokeStyle = cssVar("--line");
+  const raw = max / 4, pw = Math.pow(10, Math.floor(Math.log10(raw))), step = [1, 2, 5, 10].map((x) => x * pw).find((x) => x >= raw);
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let v = 0; v <= max; v += step) {
+    ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(w - R, Y(v)); ctx.stroke();
+    ctx.fillText(v + " m", L - 6, Y(v));
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (let m = 0; m <= 5; m++) ctx.fillText(m === 0 ? "now" : `-${m} min`, X(now - m * 60000), h - B + 6);
+  if (!history.length) {
+    ctx.textBaseline = "middle"; ctx.fillText(port ? "Collecting data..." : "Connect a board to start", w / 2, h / 2);
+    return;
+  }
+  for (const [k, col] of series) {
+    ctx.strokeStyle = col; ctx.lineWidth = k === "tape" ? 1.5 : 2.2; ctx.setLineDash(k === "tape" ? [6, 5] : []);
+    ctx.beginPath(); let pen = false;
+    for (const p of history) {
+      const v = p[k];
+      if (v == null || !isFinite(v)) { pen = false; continue; }
+      if (!pen) { ctx.moveTo(X(p.t), Y(v)); pen = true; } else ctx.lineTo(X(p.t), Y(v));
+    }
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+window.addEventListener("resize", drawHome);
+for (const a of document.querySelectorAll("a[data-open]")) a.onclick = () => selectTab(a.dataset.open);
+
+// ---------- Saving CSV files ----------
+function csvText(mod) {
+  const esc = (v) => v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+  return [REC[mod].cols, ...REC[mod].rows].map((r) => r.map(esc).join(",")).join("\n") + "\n";
+}
+function fileStamp() {
+  const d = recT0 || new Date(), p = (x) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+function download(name, blob) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+function saveOne(mod) {
+  if (!REC[mod].rows.length) return;
+  download(`ME74_${REC[mod].file}_${fileStamp()}.csv`, new Blob([csvText(mod)], { type: "text/csv" }));
+}
+
+// Minimal ZIP writer (files stored uncompressed) so "Save all" is one download
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function makeZip(files) {
+  const enc = new TextEncoder(), d = new Date();
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  const parts = [], central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), data = f.data, crc = crc32(data);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true);
+    lh.setUint16(10, time, true); lh.setUint16(12, date, true); lh.setUint32(14, crc, true);
+    lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, name.length, true);
+    parts.push(new Uint8Array(lh.buffer), name, data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint16(12, time, true); ch.setUint16(14, date, true); ch.setUint32(16, crc, true);
+    ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, name.length, true);
+    ch.setUint32(42, offset, true);
+    central.push(new Uint8Array(ch.buffer), name);
+    offset += 30 + name.length + data.length;
+  }
+  const size = central.reduce((s, a) => s + a.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+  end.setUint32(12, size, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
+}
+function saveAll() {
+  const enc = new TextEncoder(), stampStr = fileStamp();
+  const files = Object.keys(REC).filter((m) => REC[m].rows.length)
+    .map((m) => ({ name: `ME74_${REC[m].file}_${stampStr}.csv`, data: enc.encode(csvText(m)) }));
+  if (files.length) download(`ME74_all_data_${stampStr}.zip`, makeZip(files));
+}
+function totalRows() { return Object.values(REC).reduce((s, r) => s + r.rows.length, 0); }
+function updateSaveButtons() {
+  const total = totalRows();
+  $("btnSaveAll").disabled = $("btnClearData").disabled = total === 0;
+  $("recCount").textContent = total ? `${total.toLocaleString()} rows recorded` : "No data recorded yet";
+  const r = REC[currentTab];
+  saveTabBtn.textContent = `\u2913 Save ${r.label} CSV (${r.rows.length.toLocaleString()} rows)`;
+  saveTabBtn.disabled = r.rows.length === 0;
+}
+setInterval(updateSaveButtons, 1000);
+saveTabBtn.onclick = () => saveOne(currentTab);
+$("btnSaveAll").onclick = saveAll;
+$("btnClearData").onclick = () => {
+  if (!confirm("Clear all recorded data? Save it first if you need it.")) return;
+  for (const r of Object.values(REC)) r.rows = [];
+  history.length = 0; recT0 = null;
+  updateSaveButtons(); drawHome();
+};
+window.addEventListener("beforeunload", (e) => { if (totalRows()) { e.preventDefault(); e.returnValue = ""; } });
+
+// ---------- Console ----------
+for (const k of Object.keys(show)) {
+  const l = document.createElement("label");
+  l.innerHTML = `<input type="checkbox" checked> ${k === "other" ? "untagged" : k}`;
+  l.querySelector("input").onchange = (e) => { show[k] = e.target.checked; };
+  $("filters").appendChild(l);
+}
+const logLines = [];
+let logDirty = false;
+function consoleLine(text, tag) {
+  REC.console.rows.push([new Date().toISOString(), text]);
+  if (!show[tag in show ? tag : "other"]) return;
+  logLines.push(text);
+  if (logLines.length > 600) logLines.splice(0, logLines.length - 600);
+  logDirty = true;
+}
+setInterval(() => {
+  if (!logDirty) return;
+  logDirty = false;
+  const el = $("log");
+  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  el.textContent = logLines.join("\n");
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}, 200);
+
+// ---------- Serial ----------
+function setStatus(text, cls) { $("status").textContent = text; $("status").className = "pill " + (cls || ""); }
+
+async function connect() {
+  if (!("serial" in navigator)) {
+    setStatus("Use Chrome or Edge (Web Serial needed)", "bad");
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+  } catch (e) {
+    port = null;
+    if (e.name !== "NotFoundError") {
+      setStatus("Could not open the port", "bad");
+      consoleLine("Could not open the port: " + e.message + " (close the Serial Monitor or any other program using it)", "SYS");
+    }
+    return;
+  }
+  writer = port.writable.getWriter();
+  setStatus("Connected", "ok");
+  $("btnConnect").textContent = "Disconnect";
+  $("btnConnect").className = "";
+  readLoop();
+  for (const [mod, c] of Object.entries(CHILDREN)) {
+    frames[mod].contentWindow.postMessage({ me74: 1, kind: "connect", button: c.button }, "*");
+  }
+  setTimeout(() => { send("info\n"); send("state\n"); }, 400);
+  renderRun();
+}
+
+async function disconnect(reason) {
+  for (const f of Object.values(frames)) f.contentWindow.postMessage({ me74: 1, kind: "disconnect" }, "*");
+  try { if (reader) await reader.cancel(); } catch (e) {}
+  try { if (pipeDone) await pipeDone; } catch (e) {}
+  try { if (writer) writer.releaseLock(); } catch (e) {}
+  try { if (port) await port.close(); } catch (e) {}
+  port = reader = writer = pipeDone = null;
+  setStatus(reason || "Not connected", reason ? "bad" : "");
+  $("btnConnect").textContent = "Connect board";
+  $("btnConnect").className = "primary";
+  renderRun();
+}
+
+async function readLoop() {
+  const decoder = new TextDecoderStream();
+  pipeDone = port.readable.pipeTo(decoder.writable).catch(() => {});
+  reader = decoder.readable.getReader();
+  let buf = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).replace(/\r$/, "");
+        buf = buf.slice(i + 1);
+        if (line.trim()) {
+          try { routeLine(line); } catch (err) { console.error(err); }   // one odd line never drops the connection
+        }
+      }
+    }
+  } catch (e) {
+    if (port) disconnect("Board disconnected");
+  } finally {
+    try { reader.releaseLock(); } catch (e) {}
+  }
+}
+
+function routeLine(line) {
+  const m = line.match(/^\[(SYS|GPS|IMU|LORA|ESPNOW)\] ?(.*)$/);
+  if (!m) { consoleLine(line, "other"); return; }
+  const tag = m[1], body = m[2];
+  if (tag === "SYS" && body.startsWith("STATE ")) { onState(body); return; }
+  // The IMU's 50 Hz logging lines would flood the console; show them only in the IMU tab
+  if (!(tag === "IMU" && body.startsWith("LOG,"))) consoleLine(line, tag);
+  const mod = TAGS[tag];
+  if (!mod || !HAS(mod)) return;   // a module this dashboard doesn't have: console only
+  lastSeen[mod] = performance.now();
+  recordLine(mod, body);
+  frames[mod].contentWindow.postMessage({ me74: 1, kind: "data", text: body + "\n" }, "*");
+}
+
+function send(text) {
+  if (!writer) return;
+  if (!text.endsWith("\n")) text += "\n";   // the IMU tab sends single characters
+  const data = new TextEncoder().encode(text);
+  writeChain = writeChain.then(() => writer && writer.write(data)).catch(() => {});
+}
+
+window.addEventListener("message", (e) => {
+  const m = e.data;
+  if (!m || !m.me74 || m.kind !== "send") return;
+  send(m.text);
+});
+
+navigator.serial?.addEventListener("disconnect", (e) => {
+  if (port && e.target === port) disconnect("Board unplugged");
+});
+
+setInterval(() => {
+  const now = performance.now();
+  for (const mod of Object.keys(CHILDREN)) {
+    $("dot-" + mod).classList.toggle("live", !!port && lastSeen[mod] && now - lastSeen[mod] < 3000);
+  }
+}, 500);
+
+$("btnConnect").onclick = () => (port ? disconnect() : connect());
+$("btnSend").onclick = () => { const v = $("cmd").value.trim(); if (v) { send(v); consoleLine("> " + v, "SYS"); $("cmd").value = ""; } };
+$("cmd").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btnSend").click(); });
+for (const b of document.querySelectorAll("button[data-cmd]")) {
+  b.onclick = () => { send(b.dataset.cmd); consoleLine("> " + b.dataset.cmd, "SYS"); };
+}
+if (!("serial" in navigator)) setStatus("Open in Chrome or Edge to connect", "bad");
+selectTab("home");
+</script>
+</body>
+</html>
