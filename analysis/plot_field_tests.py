@@ -27,7 +27,7 @@ def tape_axis(ax, values, compact=False):
     lo, hi = min(-5, v.min() * 1.3), max(100, v.max() * 1.3)
     ax.set_yscale("symlog", linthresh=LIN, linscale=3)
     ax.set_ylim(lo, hi)
-    neg = (-10000, -1000, -100, -50) if compact else (-5000, -2000, -1000, -500, -200, -100, -50)
+    neg = (-10000, -1000, -100, -50) if compact else (-5000, -2000, -1000, -500, -200, -100) + tuple(range(-90, 0, 10))
     pos = (100, 1000, 10000) if compact else (100, 200, 500, 1000, 2000, 5000, 10000)
     ticks = [t for t in neg if t > lo] + list(range(0, 100, 20 if compact else 10)) + [t for t in pos if t < hi]
     ax.set_yticks(ticks, [str(t) for t in ticks])
@@ -128,6 +128,36 @@ ax.legend(frameon=False, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.15)
 fig.tight_layout()
 fig.savefig(os.path.join(OUT, "gps_error_by_segment.png"))
 plt.close(fig)
+
+# 3b) radio and IMU error at each segment end (each pair side by side, same scale)
+def error_pair(names, filename):
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+    for ax, name in zip(axes, names):
+        ax.axhline(0, color="#5f5e5a", lw=1)
+        for trial, e in summ.dropna(subset=[f"{name} error (m)"]).groupby("Trial", sort=False):
+            tab = [k for k in TRIALS if k.endswith(trial)][0]
+            e = e.sort_values("True position (m)")
+            ax.plot(e["True position (m)"], e[f"{name} error (m)"], "o-", color=TRIAL_COLORS[tab], lw=2, ms=6,
+                    label=TRIALS[tab][0])
+        ax.set_title(f"{name} error at each segment end")
+        ax.set_xticks(range(0, 100, 10))
+        ax.set_xlabel("True position (m)")
+    for ax in axes:
+        tape_axis(ax, [summ[f"{n} error (m)"] for n in names])
+    axes[0].set_ylabel("Error: estimated - true (m)")
+    handles, labels = {}, {}
+    for ax in axes:
+        for h, l in zip(*ax.get_legend_handles_labels()):
+            handles[l] = h
+    fig.legend(handles.values(), handles.keys(), ncol=5, loc="lower center", frameon=False)
+    fig.text(0.01, 0.01, f"Shaded area: log scale beyond ±{LIN} m.", fontsize=8, color="#5f5e5a")
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    fig.savefig(os.path.join(OUT, filename))
+    plt.close(fig)
+
+
+error_pair(("LoRa", "ESP-NOW"), "radio_error_by_segment.png")
+error_pair(("IMU1", "IMU2"), "imu_error_by_segment.png")
 
 # 4) median absolute error per sensor per trial (median so a few radio blow-ups don't dominate; log scale)
 err = {}
