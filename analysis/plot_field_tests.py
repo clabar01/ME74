@@ -18,7 +18,24 @@ os.makedirs(OUT, exist_ok=True)
 TRIALS = {"Day 1 ESP-NOW walk": ("Day 1 ESP-NOW walk", False), "Day 2 Trial 1": ("Day 2 Trial 1", False),
           "Day 2 Trial 3": ("Day 2 Trial 3", False), "Day 2 Trial 4": ("Day 2 Trial 4", True),
           "Day 2 Return run": ("Day 2 Return run", True)}
-Y_MAX = 120                                 # radio estimates spike into the 1000s; clip so the tape range stays readable
+LIN = 100                                   # linear scale up to 100 m, log scale beyond (radio/IMU estimates reach the 1000s)
+
+
+def tape_axis(ax, values, compact=False):
+    """Linear 0-100 m so the tape range stays readable, log above/below so large errors stay visible."""
+    v = pd.concat(values).dropna()
+    lo, hi = min(-5, v.min() * 1.3), max(100, v.max() * 1.3)
+    ax.set_yscale("symlog", linthresh=LIN, linscale=3)
+    ax.set_ylim(lo, hi)
+    neg = (-10000, -1000, -100, -50) if compact else (-5000, -2000, -1000, -500, -200, -100, -50)
+    pos = (100, 1000, 10000) if compact else (100, 200, 500, 1000, 2000, 5000, 10000)
+    ticks = [t for t in neg if t > lo] + list(range(0, 100, 20 if compact else 10)) + [t for t in pos if t < hi]
+    ax.set_yticks(ticks, [str(t) for t in ticks])
+    ax.yaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+    if hi > LIN:
+        ax.axhspan(LIN, hi, color="#f4f3ef", zorder=0)
+    if lo < -LIN:
+        ax.axhspan(lo, -LIN, color="#f4f3ef", zorder=0)
 
 # sensor -> (column, colour). GPS/IMU are distance travelled since zero; radios are distance to the base node at 0 m.
 SENSORS = {
@@ -45,23 +62,24 @@ for tab, (label, reverse) in TRIALS.items():
     breaks = df.loc[gap, ["Time (s)"]] - 0.5
     df = pd.concat([df, breaks]).sort_values("Time (s)", kind="stable")
     fig, ax = plt.subplots(figsize=(11, 5.5))
+    plotted = []
     for name, (col, color) in SENSORS.items():
         if col not in df:
             continue
         v = df[col]
         if reverse and name in ("GPS", "IMU1", "IMU2"):
             v = 90 - v
-        ax.plot(df["Time (s)"], v.clip(upper=Y_MAX), color=color, lw=2, label=name)
+        ax.plot(df["Time (s)"], v, color=color, lw=2, label=name)
+        plotted.append(v)
+    tape_axis(ax, plotted)
     for seg, t in df.groupby("Segment (m)", sort=False)["Time (s)"].first().items():
         ax.axvline(t, color="#b5b4ad", lw=0.8, ls="--")
-        ax.text(t + 1, Y_MAX - 3, seg, fontsize=8, color="#5f5e5a", va="top")
-    ax.set_ylim(-5, Y_MAX)
-    ax.set_yticks(range(0, 100, 10))
+        ax.text(t + 1, 1.01, seg, fontsize=8, color="#5f5e5a", va="bottom", transform=ax.get_xaxis_transform())
     ax.set_xlabel("Time since trial start (s)")
     ax.set_ylabel("Estimated position on tape (m)")
-    ax.set_title(f"{label} ({'90 → 0' if reverse else '0 → 90'} m): sensor estimates over time")
+    ax.set_title(f"{label} ({'90 → 0' if reverse else '0 → 90'} m): sensor estimates over time", pad=18)
     ax.legend(ncol=5, loc="upper center", bbox_to_anchor=(0.5, -0.12), frameon=False)
-    fig.text(0.01, 0.01, f"Values above {Y_MAX} m are clipped to the top edge.", fontsize=8, color="#5f5e5a")
+    fig.text(0.01, 0.01, f"Shaded area: log scale beyond ±{LIN} m.", fontsize=8, color="#5f5e5a")
     fig.tight_layout()
     fig.savefig(os.path.join(OUT, f"{tab.replace(' ', '_')}_timeseries.png"))
     plt.close(fig)
@@ -78,16 +96,19 @@ for ax, name in zip(axes, SENSORS):
         tab = [k for k in TRIALS if k.endswith(trial)][0]
         e = e.dropna(subset=[f"{name} est position (m)"]).sort_values("True position (m)")
         if len(e):
-            ax.plot(e["True position (m)"], e[f"{name} est position (m)"].clip(upper=Y_MAX), "o-",
+            ax.plot(e["True position (m)"], e[f"{name} est position (m)"], "o-",
                     color=TRIAL_COLORS[tab], lw=1.5, ms=5, label=TRIALS[tab][0])
     ax.set_title(name)
     ax.set_xlabel("True position (m)")
     ax.set_xticks(range(0, 100, 30))
-    ax.set_ylim(-5, Y_MAX)
+cols = [f"{n} est position (m)" for n in SENSORS]
+for ax in axes:
+    tape_axis(ax, [summ[c] for c in cols], compact=True)
 axes[0].set_ylabel("Estimated position (m)")
 handles, labels = axes[2].get_legend_handles_labels()
 fig.legend(handles, labels, ncol=6, loc="lower center", frameon=False)
 fig.suptitle("Estimated vs true position at the end of each 10 m segment (all trials)", fontweight="bold")
+fig.text(0.01, 0.01, f"Shaded area: log scale beyond ±{LIN} m.", fontsize=8, color="#5f5e5a")
 fig.tight_layout(rect=(0, 0.07, 1, 1))
 fig.savefig(os.path.join(OUT, "all_trials_estimated_vs_true.png"))
 plt.close(fig)
