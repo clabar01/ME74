@@ -1,0 +1,994 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ESP-NOW range map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Chakra+Petch:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #EEF1F4;
+    --panel: #FFFFFF;
+    --ink: #18222F;
+    --muted: #5B6878;
+    --line: #D3D9E0;
+    --signal: #2457D6;
+    --good: #23865F;
+    --warn: #B7791F;
+    --bad: #C2413A;
+    --display: "Chakra Petch", "Rajdhani", "Segoe UI", system-ui, sans-serif;
+    --body: "Barlow", "Segoe UI", system-ui, -apple-system, sans-serif;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #0F1724;
+      --panel: #172235;
+      --ink: #E6ECF3;
+      --muted: #8D9BB0;
+      --line: #2A3A52;
+      --signal: #7BA2FF;
+      --good: #4FC59A;
+      --warn: #E5B24F;
+      --bad: #F07A72;
+    }
+  }
+  *, *::before, *::after { box-sizing: inherit; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.45;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px; }
+
+  header {
+    display: flex; flex-wrap: wrap; align-items: center;
+    justify-content: space-between; gap: 12px; margin-bottom: 18px;
+  }
+  h1 {
+    font-family: var(--display); font-weight: 600;
+    font-size: 1.6rem; margin: 0; letter-spacing: 0.01em;
+  }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.95rem; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .status[data-state="live"] .dot { background: var(--good); }
+  .status[data-state="demo"] .dot { background: var(--signal); }
+  .status[data-state="error"] .dot { background: var(--bad); }
+  .status[data-state="error"] { color: var(--bad); }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  button {
+    font: 600 0.95rem var(--body);
+    padding: 9px 16px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  button.primary { background: var(--signal); border-color: var(--signal); color: #fff; }
+  @media (prefers-color-scheme: dark) { button.primary { color: #0F1724; } }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button:focus-visible, input:focus-visible, summary:focus-visible {
+    outline: 3px solid var(--signal); outline-offset: 2px;
+  }
+
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(280px, 1fr);
+    gap: 20px; align-items: start;
+  }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 16px;
+  }
+  .radar-box { position: relative; width: 100%; aspect-ratio: 1 / 1; max-height: 74vh; margin: 0 auto; }
+  .radar-box canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .caption { color: var(--muted); font-size: 0.92rem; margin: 10px 2px 0; }
+
+  .history { margin-top: 16px; }
+  .history h2, .side h2 {
+    font-family: var(--display); font-weight: 600; font-size: 1.05rem; margin: 0 0 8px;
+  }
+  .history canvas { width: 100%; height: 150px; display: block; }
+
+  .side { display: grid; gap: 16px; }
+  .distance {
+    font-family: var(--display); font-weight: 600;
+    font-size: clamp(3rem, 7vw, 4.4rem); line-height: 1; margin: 2px 0 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .distance small { font-size: 0.4em; color: var(--muted); margin-left: 4px; }
+  .range { color: var(--muted); margin: 0; }
+  .quality { font-weight: 600; }
+
+  dl.readouts { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; margin: 0; }
+  dl.readouts dt { color: var(--muted); }
+  dl.readouts dd { margin: 0; text-align: right; font-family: var(--display); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+  .control { margin-bottom: 14px; }
+  .control label { display: flex; justify-content: space-between; font-weight: 500; margin-bottom: 4px; }
+  .control output { font-family: var(--display); font-variant-numeric: tabular-nums; }
+  .control p { margin: 4px 0 0; color: var(--muted); font-size: 0.88rem; }
+  input[type="range"] { width: 100%; accent-color: var(--signal); }
+
+  details summary { cursor: pointer; font-weight: 600; }
+  input[type="text"] {
+    width: 100%; font: 500 0.95rem var(--body); padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  }
+  .rec-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .rec-actions button { flex: 1 1 auto; }
+  .rec-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--bad); margin-right: 6px; vertical-align: middle; }
+  pre.log {
+    margin: 10px 0 0; max-height: 220px; overflow: auto;
+    font-size: 0.78rem; line-height: 1.35; color: var(--muted);
+    white-space: pre; background: var(--bg); padding: 10px; border-radius: 8px;
+  }
+  .note { color: var(--muted); font-size: 0.9rem; margin: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>ESP-NOW range map</h1>
+      <div class="status" id="status" data-state="idle" role="status" aria-live="polite">
+        <span class="dot"></span><span id="statusText">Not connected. Plug in a board and connect, or run the demo.</span>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnConnect">Connect board</button>
+      <button id="btnDemo">Run demo</button>
+      <button id="btnStop" disabled>Stop</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="radar-box"><canvas id="radar" aria-label="Range map: this board at the center, the other board's estimated distance shown as a ring"></canvas></div>
+      <p class="caption">This board is at the center. Signal strength gives distance but not direction, so the other board is somewhere on the ring. The shaded band shows how uncertain the estimate is.</p>
+
+      <div class="history">
+        <h2>Signal over the last minute</h2>
+        <canvas id="history" aria-label="Signal strength history"></canvas>
+      </div>
+    </section>
+
+    <aside class="side">
+      <section class="panel">
+        <h2>Estimated distance</h2>
+        <div class="distance" id="distance">--<small>m</small></div>
+        <p class="range" id="range">Waiting for the other board</p>
+      </section>
+
+      <section class="panel">
+        <dl class="readouts">
+          <dt>This board hears peer</dt><dd id="rRssi">--</dd>
+          <dt>Peer hears this board</dt><dd id="rPeer">--</dd>
+          <dt>Signal quality</dt><dd id="rQuality">--</dd>
+          <dt>Packet loss</dt><dd id="rLoss">--</dd>
+          <dt>This board</dt><dd id="rMyMac">--</dd>
+          <dt>Peer board</dt><dd id="rPeerMac">--</dd>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>Calibration</h2>
+        <div class="control">
+          <label for="sRef">Signal at 1 m <output id="oRef">-45 dBm</output></label>
+          <input type="range" id="sRef" min="-90" max="-20" step="1" value="-45">
+        </div>
+        <div class="control">
+          <label for="sN">Environment factor <output id="oN">2.5</output></label>
+          <input type="range" id="sN" min="1.5" max="4.5" step="0.1" value="2.5">
+          <p>About 2 outdoors in the open, 2.5 to 4 indoors with walls and furniture.</p>
+        </div>
+        <button id="btnCal" disabled>Set 1 m from current signal</button>
+        <p class="note" style="margin-top:8px">Place the boards exactly 1 m apart, wait a few seconds for the reading to settle, then press this.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Recording</h2>
+        <p class="note" id="sessInfo">Every reading is recorded automatically once data starts arriving.</p>
+        <div class="control" style="margin-top:10px">
+          <label for="tLabel">Test label</label>
+          <input type="text" id="tLabel" placeholder="e.g. 3 m, hallway, antenna up" autocomplete="off">
+          <p>Saved with each reading, so you can compare runs later. Change it between tests.</p>
+        </div>
+        <div class="rec-actions">
+          <button class="primary" id="btnReport" disabled>Save report (data + graphs)</button>
+          <button id="btnCsv" disabled>Save CSV</button>
+          <button id="btnPng" disabled>Save graphs (PNG)</button>
+          <button id="btnLive">Live-save to file</button>
+          <button id="btnClear" disabled>Clear recording</button>
+        </div>
+        <p class="note" id="liveInfo" style="margin-top:8px"></p>
+      </section>
+
+      <section class="panel">
+        <details>
+          <summary>Serial output</summary>
+          <pre class="log" id="log"></pre>
+        </details>
+      </section>
+    </aside>
+  </main>
+</div>
+
+<script>
+(() => {
+  // ---------------- State ----------------
+  const S = {
+    rssi: null, peer: null, loss: null,
+    myMac: null, peerMac: null,
+    lost: true, lastPacket: 0, lastLine: 0,
+    recent: [], history: [],
+    ref: -45, n: 2.5,
+    mode: 'idle',
+    hasData: false          // true once the firmware's DATA lines are seen
+  };
+  const session = [];       // every recorded sample
+  let sessionT0 = null, savedCount = 0;
+  const HISTORY_MAX = 120;              // 120 x 0.5 s = 60 s
+  const SCALES = [1, 2, 3, 5, 10, 20, 30, 50, 100];
+  let viewScale = 5;
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const $ = id => document.getElementById(id);
+  const radar = $('radar'), hist = $('history');
+  const rctx = radar.getContext('2d'), hctx = hist.getContext('2d');
+
+  // ---------------- Helpers ----------------
+  const dist = r => Math.pow(10, (S.ref - r) / (10 * S.n));
+  const fmtM = d => d < 10 ? d.toFixed(1) : String(Math.round(d));
+  function quality(r) {
+    if (r >= -50) return ['Excellent', 'good'];
+    if (r >= -60) return ['Good', 'good'];
+    if (r >= -70) return ['Fair', 'warn'];
+    if (r >= -80) return ['Weak', 'warn'];
+    return ['Very weak', 'bad'];
+  }
+  function sigma() {
+    const a = S.recent.slice(-20);
+    if (a.length < 3) return 4;
+    const m = a.reduce((x, y) => x + y, 0) / a.length;
+    const v = a.reduce((x, y) => x + (y - m) * (y - m), 0) / (a.length - 1);
+    return Math.max(2, Math.sqrt(v));
+  }
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function setStatus(state, text) { $('status').dataset.state = state; $('statusText').textContent = text; }
+
+  // ---------------- Parsing ----------------
+  const logLines = [];
+  function log(line) {
+    logLines.push(line);
+    if (logLines.length > 60) logLines.shift();
+    const el = $('log');
+    el.textContent = logLines.join('\n');
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function pushHistory(v) {
+    S.history.push(v);
+    if (S.history.length > HISTORY_MAX) S.history.shift();
+  }
+
+  function ingestLine(line) {
+    if (!line.trim()) return;
+    S.lastLine = performance.now();
+    log(line);
+
+    const my = line.match(/My MAC:\s*([0-9A-Fa-f:]{17})/);
+    if (my) { S.myMac = my[1].toUpperCase(); updateReadouts(); return; }
+
+    // Preferred: machine-readable line from the updated firmware
+    // DATA,board_ms,status,raw,smoothed,peer,loss,rx,missed
+    if (line.startsWith('DATA,')) {
+      const f = line.split(',');
+      if (f.length < 9) return;
+      S.hasData = true;
+      const num = v => { const x = parseFloat(v); return isFinite(x) ? x : null; };
+      handleSample({ boardMs: num(f[1]), status: f[2].trim(), raw: num(f[3]), rssi: num(f[4]),
+                     peer: num(f[5]), loss: num(f[6]), rx: num(f[7]), missed: num(f[8]) });
+      return;
+    }
+
+    const pm = line.match(/Peer\s+([0-9A-Fa-f:]{17})/);
+    if (pm) S.peerMac = pm[1].toUpperCase();
+    if (S.hasData) return;   // human-readable lines are only a fallback for older firmware
+
+    if (/No signal from peer/.test(line)) { handleSample({ status: 'LOST' }); return; }
+    const m = line.match(/I hear peer:\s*(-?\d+(?:\.\d+)?)\s*dBm/);
+    if (!m) return;
+    const p = line.match(/Peer hears me:\s*(-?\d+)\s*dBm/);
+    const l = line.match(/Loss:\s*(\d+(?:\.\d+)?)%/);
+    handleSample({ status: 'OK', rssi: parseFloat(m[1]), peer: p ? parseInt(p[1], 10) : null,
+                   loss: l ? parseFloat(l[1]) : null });
+  }
+
+  function handleSample(d) {
+    if (d.status === 'LOST' || d.rssi === null || d.rssi === undefined || !isFinite(d.rssi)) {
+      S.lost = true;
+      pushHistory(null);
+      record(d, true);
+      updateReadouts();
+      return;
+    }
+    S.rssi = d.rssi;
+    S.lost = false;
+    S.lastPacket = performance.now();
+    S.recent.push(d.rssi);
+    if (S.recent.length > 40) S.recent.shift();
+    pushHistory(d.rssi);
+    S.peer = (d.peer === null || d.peer === undefined) ? null : d.peer;
+    S.loss = (d.loss === null || d.loss === undefined) ? null : d.loss;
+    record(d, false);
+    updateReadouts();
+  }
+
+  // ---------------- Recording ----------------
+  const CSV_COLS = ['time_iso', 'elapsed_s', 'board_ms', 'source', 'label', 'status', 'rssi_raw_dbm',
+                    'rssi_smoothed_dbm', 'peer_hears_me_dbm', 'packet_loss_pct', 'packets_rx', 'packets_missed',
+                    'est_distance_m', 'distance_low_m', 'distance_high_m', 'cal_rssi_1m_dbm', 'cal_env_factor',
+                    'this_board_mac', 'peer_mac'];
+
+  function record(d, lost) {
+    const now = new Date();
+    if (sessionT0 === null) sessionT0 = now;
+    const s = sigma();
+    const row = {
+      time_iso: now.toISOString(),
+      elapsed_s: (now - sessionT0) / 1000,
+      board_ms: d.boardMs ?? null,
+      source: S.mode === 'demo' ? 'demo' : 'board',
+      label: $('tLabel').value.trim(),
+      status: lost ? 'LOST' : 'OK',
+      rssi_raw_dbm: lost ? null : (d.raw ?? null),
+      rssi_smoothed_dbm: lost ? null : d.rssi,
+      peer_hears_me_dbm: lost ? null : (d.peer ?? null),
+      packet_loss_pct: d.loss ?? null,
+      packets_rx: d.rx ?? null,
+      packets_missed: d.missed ?? null,
+      est_distance_m: lost ? null : dist(d.rssi),
+      distance_low_m: lost ? null : dist(d.rssi + s),
+      distance_high_m: lost ? null : dist(d.rssi - s),
+      cal_rssi_1m_dbm: S.ref,
+      cal_env_factor: S.n,
+      this_board_mac: S.myMac || '',
+      peer_mac: S.peerMac || ''
+    };
+    session.push(row);
+    if (live.handle) live.pending.push(csvLine(row));
+    updateSessionInfo();
+  }
+
+  function csvCell(v) {
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(3);
+    const t = String(v);
+    return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  }
+  function csvLine(r) { return CSV_COLS.map(c => csvCell(r[c])).join(',') + '\n'; }
+  function buildCsv() { return CSV_COLS.join(',') + '\n' + session.map(csvLine).join(''); }
+
+  function fmtDur(sec) {
+    sec = Math.round(sec);
+    const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s2 = sec % 60;
+    return (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + s2 + ' s';
+  }
+  let infoTimer = 0;
+  function updateSessionInfo() {
+    const nowMs = performance.now();
+    if (nowMs - infoTimer < 400 && session.length > 1) return;
+    infoTimer = nowMs;
+    const has = session.length > 0;
+    ['btnReport', 'btnCsv', 'btnPng', 'btnClear'].forEach(id => $(id).disabled = !has);
+    if (!has) { $('sessInfo').textContent = 'Every reading is recorded automatically once data starts arriving.'; return; }
+    const lost = session.filter(r => r.status === 'LOST').length;
+    const unsaved = session.length - savedCount;
+    $('sessInfo').innerHTML = '<span class="rec-dot"></span>' + session.length + ' readings over ' +
+      fmtDur(session[session.length - 1].elapsed_s) + (lost ? ' (' + lost + ' with no signal)' : '') +
+      (unsaved > 0 && !live.handle ? '. ' + unsaved + ' not saved yet.' : '. All saved.');
+  }
+
+  function stamp() {
+    const d = sessionT0 || new Date();
+    const p = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + '-' + p(d.getMinutes()) + '-' + p(d.getSeconds());
+  }
+  function download(name, blob) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    savedCount = session.length;
+    updateSessionInfo();
+  }
+
+  // ---------- Full-session graphs (always drawn on a white background) ----------
+  function niceStep(raw) {
+    const p = Math.pow(10, Math.floor(Math.log10(raw)));
+    const f = raw / p;
+    return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+  }
+  function plotPanel(ctx, X, Y, W, Hh, opt) {
+    const L = X + 78, R = X + W - 20, T = Y + 34, B = Y + Hh - 40;
+    const t1 = Math.max(opt.tMax, 1);
+    const tx = t => L + (R - L) * t / t1;
+    const [v0, v1] = opt.yRange;
+    const vy = v => B - (B - T) * (Math.max(v0, Math.min(v1, v)) - v0) / (v1 - v0);
+    ctx.fillStyle = '#18222F'; ctx.font = '600 20px Barlow, Segoe UI, sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(opt.title, X + 10, Y + 22);
+    // no-signal periods
+    ctx.fillStyle = 'rgba(194,65,58,0.10)';
+    for (const [a, b] of opt.lostSpans) ctx.fillRect(tx(a), T, Math.max(2, tx(b) - tx(a)), B - T);
+    // grid
+    ctx.font = '13px Barlow, Segoe UI, sans-serif'; ctx.strokeStyle = '#E1E6EB'; ctx.lineWidth = 1;
+    ctx.fillStyle = '#5B6878';
+    const ys = niceStep((v1 - v0) / 5);
+    for (let v = Math.ceil(v0 / ys) * ys; v <= v1 + 1e-9; v += ys) {
+      ctx.beginPath(); ctx.moveTo(L, vy(v)); ctx.lineTo(R, vy(v)); ctx.stroke();
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText(+v.toFixed(2) + '', L - 8, vy(v));
+    }
+    const xs = niceStep(t1 / 8);
+    for (let t = 0; t <= t1 + 1e-9; t += xs) {
+      ctx.beginPath(); ctx.moveTo(tx(t), T); ctx.lineTo(tx(t), B); ctx.stroke();
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(fmtAxisTime(t), tx(t), B + 6);
+    }
+    ctx.save(); ctx.translate(X + 18, (T + B) / 2); ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(opt.yLabel, 0, 0); ctx.restore();
+    // label change markers
+    for (const [t, text] of opt.marks) {
+      ctx.strokeStyle = '#8D9BB0'; ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(tx(t), T); ctx.lineTo(tx(t), B); ctx.stroke(); ctx.setLineDash([]);
+      if (text) { ctx.fillStyle = '#5B6878'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText(text, tx(t) + 4, T + 2); }
+    }
+    ctx.save(); ctx.beginPath(); ctx.rect(L, T, R - L, B - T); ctx.clip();
+    for (const s of opt.series) {
+      if (s.band) {
+        ctx.fillStyle = s.bandColor;
+        let seg = [];
+        const flush = () => {
+          if (seg.length > 1) {
+            ctx.beginPath();
+            seg.forEach(([t, lo], i) => i ? ctx.lineTo(tx(t), vy(lo)) : ctx.moveTo(tx(t), vy(lo)));
+            for (let i = seg.length - 1; i >= 0; i--) ctx.lineTo(tx(seg[i][0]), vy(seg[i][2]));
+            ctx.closePath(); ctx.fill();
+          }
+          seg = [];
+        };
+        for (const p of s.band) { if (p[1] === null) flush(); else seg.push(p); }
+        flush();
+      }
+      ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 2; ctx.lineJoin = 'round';
+      ctx.beginPath(); let pen = false;
+      for (const [t, v] of s.pts) {
+        if (v === null || v === undefined) { pen = false; continue; }
+        if (!pen) { ctx.moveTo(tx(t), vy(v)); pen = true; } else ctx.lineTo(tx(t), vy(v));
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+    // legend
+    let lx = R;
+    ctx.font = '14px Barlow, Segoe UI, sans-serif'; ctx.textBaseline = 'middle';
+    for (const s of [...opt.series].reverse()) {
+      const w = ctx.measureText(s.name).width;
+      lx -= w; ctx.fillStyle = '#18222F'; ctx.textAlign = 'left'; ctx.fillText(s.name, lx, Y + 16);
+      lx -= 26; ctx.fillStyle = s.color; ctx.fillRect(lx, Y + 14, 20, 4); lx -= 18;
+    }
+    ctx.strokeStyle = '#B9C2CC'; ctx.lineWidth = 1; ctx.strokeRect(L, T, R - L, B - T);
+  }
+  function fmtAxisTime(t) {
+    if (t < 120) return Math.round(t) + ' s';
+    if (t < 7200) return (t / 60).toFixed(t % 60 ? 1 : 0) + ' min';
+    return (t / 3600).toFixed(1) + ' h';
+  }
+
+  function renderSessionChart() {
+    const W = 1600, P = 380, top = 90;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = top + P * 3 + 20;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, c.width, c.height);
+    const tMax = session.length ? session[session.length - 1].elapsed_s : 1;
+    const pts = k => session.map(r => [r.elapsed_s, r[k]]);
+    const lostSpans = [];
+    let start = null;
+    session.forEach((r, i) => {
+      if (r.status === 'LOST' && start === null) start = r.elapsed_s;
+      if ((r.status !== 'LOST' || i === session.length - 1) && start !== null) { lostSpans.push([start, r.elapsed_s]); start = null; }
+    });
+    const marks = [];
+    let prev;
+    session.forEach((r, i) => { if (i === 0 || r.label !== prev) { if (i > 0 || r.label) marks.push([r.elapsed_s, r.label]); prev = r.label; } });
+    const okVals = k => session.map(r => r[k]).filter(v => v !== null && isFinite(v));
+    const allR = okVals('rssi_smoothed_dbm').concat(okVals('rssi_raw_dbm'), okVals('peer_hears_me_dbm'));
+    const rMin = allR.length ? Math.floor((Math.min(...allR) - 5) / 10) * 10 : -100;
+    const rMax = allR.length ? Math.ceil((Math.max(...allR) + 5) / 10) * 10 : -30;
+    const dHigh = okVals('distance_high_m');
+    const dMax = dHigh.length ? niceStep(Math.max(...dHigh) / 4) * 4.5 : 10;
+    const lossV = okVals('packet_loss_pct');
+    const lMax = Math.max(5, lossV.length ? Math.ceil(Math.max(...lossV) / 5) * 5 : 5);
+
+    ctx.fillStyle = '#18222F'; ctx.font = '600 30px Chakra Petch, Barlow, Segoe UI, sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText('ESP-NOW signal session', 30, 46);
+    ctx.font = '16px Barlow, Segoe UI, sans-serif'; ctx.fillStyle = '#5B6878';
+    ctx.fillText((sessionT0 ? sessionT0.toLocaleString() : '') + '   |   ' + session.length + ' readings over ' + fmtDur(tMax) +
+                 '   |   shaded = no signal, dashed = test label change', 30, 74);
+
+    plotPanel(ctx, 0, top, W, P, {
+      title: 'Signal strength', yLabel: 'dBm', tMax, yRange: [rMin, rMax], lostSpans, marks,
+      series: [{ name: 'Raw (window avg)', color: '#A9BCEB', width: 1.2, pts: pts('rssi_raw_dbm') },
+               { name: 'This board hears peer (smoothed)', color: '#2457D6', width: 2.4, pts: pts('rssi_smoothed_dbm') },
+               { name: 'Peer hears this board', color: '#D9822B', width: 1.6, pts: pts('peer_hears_me_dbm') }]
+    });
+    plotPanel(ctx, 0, top + P, W, P, {
+      title: 'Estimated distance', yLabel: 'meters', tMax, yRange: [0, dMax], lostSpans, marks,
+      series: [{ name: 'Estimate (band = likely range)', color: '#23865F', width: 2.4, pts: pts('est_distance_m'),
+                 band: session.map(r => [r.elapsed_s, r.distance_low_m, r.distance_high_m]), bandColor: 'rgba(35,134,95,0.15)' }]
+    });
+    plotPanel(ctx, 0, top + 2 * P, W, P, {
+      title: 'Packet loss (cumulative)', yLabel: 'percent', tMax, yRange: [0, lMax], lostSpans, marks,
+      series: [{ name: 'Packet loss', color: '#C2413A', width: 2.2, pts: pts('packet_loss_pct') }]
+    });
+    return c;
+  }
+
+  function stats(a) {
+    if (!a.length) return null;
+    const m = a.reduce((x, y) => x + y, 0) / a.length;
+    const sd = a.length > 1 ? Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / (a.length - 1)) : 0;
+    return { n: a.length, mean: m, sd, min: Math.min(...a), max: Math.max(...a) };
+  }
+  const esc = t => String(t).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  const f1 = v => (v === null || v === undefined || !isFinite(v)) ? '' : (+v).toFixed(1);
+
+  function buildReport() {
+    const img = renderSessionChart().toDataURL('image/png');
+    const csv = buildCsv();
+    const ok = session.filter(r => r.status === 'OK');
+    const sR = stats(ok.map(r => r.rssi_smoothed_dbm));
+    const sP = stats(ok.map(r => r.peer_hears_me_dbm).filter(v => v !== null));
+    const sD = stats(ok.map(r => r.est_distance_m));
+    const last = session[session.length - 1];
+    const labels = [...new Set(session.map(r => r.label))];
+    const labelRows = labels.map(lb => {
+      const rows = session.filter(r => r.label === lb);
+      const o = rows.filter(r => r.status === 'OK');
+      const s1 = stats(o.map(r => r.rssi_smoothed_dbm)), s2 = stats(o.map(r => r.est_distance_m));
+      return '<tr><td>' + (lb ? esc(lb) : '<em>(no label)</em>') + '</td><td>' + rows.length + '</td><td>' +
+        (rows.length - o.length) + '</td><td>' + (s1 ? f1(s1.mean) : '') + '</td><td>' + (s1 ? f1(s1.sd) : '') +
+        '</td><td>' + (s1 ? f1(s1.min) + ' / ' + f1(s1.max) : '') + '</td><td>' + (s2 ? s2.mean.toFixed(2) : '') + '</td></tr>';
+    }).join('');
+    const dataRows = session.map(r => '<tr>' + CSV_COLS.map(c => '<td>' + esc(csvCell(r[c])) + '</td>').join('') + '</tr>').join('');
+    const csvHref = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP-NOW session ${stamp()}</title>
+<style>
+ body{font-family:Barlow,"Segoe UI",system-ui,sans-serif;color:#18222F;background:#fff;margin:0;padding:28px;line-height:1.45}
+ h1{margin:0 0 4px;font-size:1.7rem} h2{margin:32px 0 10px;font-size:1.2rem}
+ .muted{color:#5B6878} img{max-width:100%;border:1px solid #D3D9E0;border-radius:10px}
+ table{border-collapse:collapse;font-size:.88rem;font-variant-numeric:tabular-nums}
+ th,td{border:1px solid #D3D9E0;padding:5px 9px;text-align:right;white-space:nowrap} th{background:#EEF1F4}
+ td:first-child,th:first-child{text-align:left}
+ .scroll{overflow:auto;max-height:70vh;border:1px solid #D3D9E0;border-radius:8px}
+ .scroll table{border:0} .scroll th{position:sticky;top:0}
+ a.btn{display:inline-block;background:#2457D6;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:600}
+</style></head><body>
+<h1>ESP-NOW signal session</h1>
+<p class="muted">Started ${esc(sessionT0.toLocaleString())} &middot; ${session.length} readings over ${fmtDur(last.elapsed_s)} &middot;
+this board ${esc(last.this_board_mac || 'unknown')} &middot; peer ${esc(last.peer_mac || 'unknown')}</p>
+<h2>Summary</h2>
+<table>
+<tr><th>Measure</th><th>Mean</th><th>Std dev</th><th>Min</th><th>Max</th></tr>
+<tr><td>This board hears peer (dBm)</td><td>${sR ? f1(sR.mean) : ''}</td><td>${sR ? f1(sR.sd) : ''}</td><td>${sR ? f1(sR.min) : ''}</td><td>${sR ? f1(sR.max) : ''}</td></tr>
+<tr><td>Peer hears this board (dBm)</td><td>${sP ? f1(sP.mean) : ''}</td><td>${sP ? f1(sP.sd) : ''}</td><td>${sP ? f1(sP.min) : ''}</td><td>${sP ? f1(sP.max) : ''}</td></tr>
+<tr><td>Estimated distance (m)</td><td>${sD ? sD.mean.toFixed(2) : ''}</td><td>${sD ? sD.sd.toFixed(2) : ''}</td><td>${sD ? sD.min.toFixed(2) : ''}</td><td>${sD ? sD.max.toFixed(2) : ''}</td></tr>
+<tr><td>Readings with no signal</td><td colspan="4">${session.length - ok.length}</td></tr>
+<tr><td>Final packet loss</td><td colspan="4">${last.packet_loss_pct !== null ? f1(last.packet_loss_pct) + '%' : ''}</td></tr>
+<tr><td>Calibration at end</td><td colspan="4">signal at 1 m ${last.cal_rssi_1m_dbm} dBm, environment factor ${last.cal_env_factor}</td></tr>
+</table>
+<h2>By test label</h2>
+<table><tr><th>Label</th><th>Readings</th><th>No signal</th><th>Mean dBm</th><th>Std dev</th><th>Min / max dBm</th><th>Mean distance (m)</th></tr>${labelRows}</table>
+<h2>Graphs</h2>
+<img src="${img}" alt="Signal strength, estimated distance and packet loss over the session">
+<h2>All data</h2>
+<p><a class="btn" href="${csvHref}" download="espnow_session_${stamp()}.csv">Download this data as CSV</a></p>
+<div class="scroll"><table><tr>${CSV_COLS.map(c => '<th>' + c + '</th>').join('')}</tr>${dataRows}</table></div>
+</body></html>`;
+  }
+
+  // ---------- Live save (writes CSV to a file as data arrives; Chrome/Edge) ----------
+  const live = { handle: null, bytes: 0, pending: [], busy: false, timer: null };
+  async function liveFlush() {
+    if (!live.handle || live.busy || !live.pending.length) return;
+    live.busy = true;
+    const text = live.pending.join(''); live.pending = [];
+    try {
+      const w = await live.handle.createWritable({ keepExistingData: true });
+      await w.seek(live.bytes); await w.write(text); await w.close();
+      live.bytes += new TextEncoder().encode(text).length;
+      savedCount = session.length;
+      $('liveInfo').textContent = 'Live-saving to ' + live.handle.name + ' (' + session.length + ' readings written).';
+    } catch (e) {
+      live.pending.unshift(text);
+      $('liveInfo').textContent = 'Could not write to the file: ' + e.message;
+    }
+    live.busy = false;
+  }
+  async function toggleLive() {
+    if (live.handle) {
+      await liveFlush();
+      clearInterval(live.timer);
+      $('liveInfo').textContent = 'Stopped live-saving. ' + live.handle.name + ' has everything up to now.';
+      live.handle = null; $('btnLive').textContent = 'Live-save to file';
+      updateSessionInfo();
+      return;
+    }
+    if (!('showSaveFilePicker' in window)) {
+      $('liveInfo').textContent = 'Live-saving needs Chrome or Edge. You can still use the Save buttons above.';
+      return;
+    }
+    try {
+      live.handle = await window.showSaveFilePicker({
+        suggestedName: 'espnow_live_' + stamp() + '.csv',
+        types: [{ description: 'CSV file', accept: { 'text/csv': ['.csv'] } }]
+      });
+    } catch (e) { return; }  // picker closed
+    live.bytes = 0;
+    live.pending = [CSV_COLS.join(',') + '\n', ...session.map(csvLine)];
+    live.timer = setInterval(liveFlush, 3000);
+    $('btnLive').textContent = 'Stop live-saving';
+    await liveFlush();
+  }
+
+  $('btnCsv').addEventListener('click', () =>
+    download('espnow_session_' + stamp() + '.csv', new Blob([buildCsv()], { type: 'text/csv' })));
+  $('btnPng').addEventListener('click', () =>
+    renderSessionChart().toBlob(b => download('espnow_graphs_' + stamp() + '.png', b), 'image/png'));
+  $('btnReport').addEventListener('click', () =>
+    download('espnow_report_' + stamp() + '.html', new Blob([buildReport()], { type: 'text/html' })));
+  $('btnLive').addEventListener('click', toggleLive);
+  $('btnClear').addEventListener('click', () => {
+    if (session.length - savedCount > 0 && !confirm('Clear ' + session.length + ' readings? Some have not been saved.')) return;
+    session.length = 0; sessionT0 = null; savedCount = 0;
+    if (live.handle) { live.pending = []; }
+    infoTimer = 0; updateSessionInfo();
+  });
+  window.addEventListener('beforeunload', e => {
+    if (session.length - savedCount > 0 && !live.handle) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  function updateReadouts() {
+    const has = !S.lost && S.rssi !== null;
+    $('btnCal').disabled = !has;
+    if (has) {
+      const d = dist(S.rssi), s = sigma();
+      $('distance').innerHTML = fmtM(d) + '<small>m</small>';
+      $('range').textContent = 'Likely between ' + fmtM(dist(S.rssi + s)) + ' and ' + fmtM(dist(S.rssi - s)) + ' m';
+      $('rRssi').textContent = S.rssi.toFixed(1) + ' dBm';
+      $('rPeer').textContent = S.peer !== null ? S.peer + ' dBm' : '--';
+      const [q, cls] = quality(S.rssi);
+      $('rQuality').textContent = q;
+      $('rQuality').style.color = css('--' + cls);
+      $('rLoss').textContent = S.loss !== null ? S.loss.toFixed(1) + '%' : '--';
+    } else {
+      $('distance').innerHTML = '--<small>m</small>';
+      $('range').textContent = S.mode === 'idle'
+        ? 'Waiting for the other board'
+        : 'No signal from the other board. Check that it is powered and within range.';
+      $('rRssi').textContent = '--';
+      $('rPeer').textContent = '--';
+      $('rQuality').textContent = S.mode === 'idle' ? '--' : 'No signal';
+      $('rQuality').style.color = S.mode === 'idle' ? '' : css('--bad');
+    }
+    $('rMyMac').textContent = S.myMac || '--';
+    $('rPeerMac').textContent = S.peerMac || '--';
+  }
+
+  // ---------------- Drawing ----------------
+  function fitCanvas(c, ctx) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = c.clientWidth, h = c.clientHeight;
+    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+      c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return [w, h];
+  }
+
+  function circle(ctx, x, y, r) { ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, Math.PI * 2); }
+
+  function drawRadar(now) {
+    const [w, h] = fitCanvas(radar, rctx);
+    const ctx = rctx;
+    ctx.clearRect(0, 0, w, h);
+    const ink = css('--ink'), muted = css('--muted'), line = css('--line'), signal = css('--signal');
+    const cx = w / 2, cy = h / 2, R = Math.max(10, Math.min(w, h) / 2 - 26);
+    const has = !S.lost && S.rssi !== null;
+
+    let d, dn, df;
+    if (has) {
+      const s = sigma();
+      d = dist(S.rssi); dn = dist(S.rssi + s); df = dist(S.rssi - s);
+      const target = SCALES.find(x => x >= df * 1.1) || SCALES[SCALES.length - 1];
+      viewScale += (target - viewScale) * (reduceMotion ? 1 : 0.08);
+    }
+
+    // Range rings
+    ctx.lineWidth = 1;
+    ctx.font = '500 12px ' + css('--display');
+    ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    for (let k = 1; k <= 4; k++) {
+      const r = R * k / 4;
+      ctx.strokeStyle = line;
+      circle(ctx, cx, cy, r); ctx.stroke();
+      ctx.fillStyle = muted;
+      ctx.fillText(fmtM(viewScale * k / 4) + ' m', cx + 5, cy - r - 3);
+    }
+    ctx.strokeStyle = line;
+    ctx.beginPath();
+    ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+    ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
+    ctx.stroke();
+
+    if (has) {
+      const rn = Math.min(R * dn / viewScale, R);
+      const rf = Math.min(R * df / viewScale, R);
+      const rd = Math.min(R * d / viewScale, R);
+
+      // Uncertainty band
+      ctx.beginPath();
+      ctx.arc(cx, cy, rf, 0, Math.PI * 2, false);
+      ctx.arc(cx, cy, rn, 0, Math.PI * 2, true);
+      ctx.fillStyle = signal; ctx.globalAlpha = 0.16; ctx.fill(); ctx.globalAlpha = 1;
+
+      // Packet pulse
+      if (!reduceMotion) {
+        const t = (now - S.lastPacket) / 700;
+        if (t >= 0 && t < 1) {
+          ctx.strokeStyle = signal; ctx.lineWidth = 2;
+          ctx.globalAlpha = (1 - t) * 0.45;
+          circle(ctx, cx, cy, rd * t); ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      // Estimated distance ring
+      ctx.strokeStyle = signal; ctx.lineWidth = 3;
+      circle(ctx, cx, cy, rd); ctx.stroke();
+
+      // Ring label
+      const label = '~' + fmtM(d) + ' m' + (d > viewScale ? ' (off scale)' : '');
+      ctx.font = '600 14px ' + css('--display');
+      const tw = ctx.measureText(label).width;
+      const ly = Math.min(cy + rd, h - 14);
+      ctx.fillStyle = css('--panel');
+      ctx.fillRect(cx - tw / 2 - 6, ly - 10, tw + 12, 20);
+      ctx.fillStyle = signal;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, cx, ly);
+    } else {
+      ctx.fillStyle = muted;
+      ctx.font = '500 15px ' + css('--body');
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const msg = S.mode === 'idle' ? 'Connect a board to start' : 'No signal from the other board';
+      ctx.fillText(msg, cx, cy - R / 2);
+    }
+
+    // This board
+    ctx.fillStyle = ink;
+    circle(ctx, cx, cy, 7); ctx.fill();
+    ctx.font = '500 13px ' + css('--body');
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('This board', cx, cy + 12);
+  }
+
+  function drawHistory() {
+    const [w, h] = fitCanvas(hist, hctx);
+    const ctx = hctx;
+    ctx.clearRect(0, 0, w, h);
+    const muted = css('--muted'), line = css('--line'), signal = css('--signal');
+    const left = 58, top = 6, bottom = h - 6, right = w - 4;
+    const y = r => top + (bottom - top) * (-30 - Math.max(-100, Math.min(-30, r))) / 70;
+
+    ctx.font = '500 11px ' + css('--display');
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (const g of [-40, -60, -80, -100]) {
+      ctx.strokeStyle = line; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(left, y(g)); ctx.lineTo(right, y(g)); ctx.stroke();
+      ctx.fillStyle = muted; ctx.fillText(g + ' dBm', left - 6, y(g));
+    }
+
+    const step = (right - left) / (HISTORY_MAX - 1);
+    const offset = HISTORY_MAX - S.history.length;
+    ctx.strokeStyle = signal; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let pen = false;
+    S.history.forEach((v, i) => {
+      const x = left + (offset + i) * step;
+      if (v === null) { pen = false; return; }
+      if (!pen) { ctx.moveTo(x, y(v)); pen = true; } else ctx.lineTo(x, y(v));
+    });
+    ctx.stroke();
+  }
+
+  function frame(now) {
+    // Flag a silent connection (board not printing)
+    if (S.mode === 'live' && S.lastLine && now - S.lastLine > 3000) {
+      setStatus('live', 'Connected, but no data is arriving. Press RST on the board.');
+    }
+    drawRadar(now);
+    drawHistory();
+    requestAnimationFrame(frame);
+  }
+
+  // ---------------- Web Serial ----------------
+  let port = null, reader = null, pipeDone = null;
+
+  async function connect() {
+    if (!('serial' in navigator)) {
+      setStatus('error', 'This browser cannot talk to USB boards. Open this file in Chrome or Edge.');
+      return;
+    }
+    await stopAll();
+    try {
+      port = await navigator.serial.requestPort();
+    } catch (e) {
+      return; // User closed the picker
+    }
+    try {
+      await port.open({ baudRate: 115200 });
+    } catch (e) {
+      port = null;
+      setStatus('error', 'Could not open the port. Close the VS Code Serial Monitor or any other program using the board, then try again.');
+      return;
+    }
+    S.mode = 'live';
+    S.lastLine = performance.now();
+    setStatus('live', 'Connected. Reading signal data.');
+    setButtons(true);
+    readLoop();
+  }
+
+  async function readLoop() {
+    const decoder = new TextDecoderStream();
+    pipeDone = port.readable.pipeTo(decoder.writable).catch(() => {});
+    reader = decoder.readable.getReader();
+    let buf = '';
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += value;
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          ingestLine(buf.slice(0, i).replace(/\r$/, ''));
+          buf = buf.slice(i + 1);
+        }
+        if (S.mode === 'live' && $('status').dataset.state === 'live' &&
+            !/Reading/.test($('statusText').textContent)) {
+          setStatus('live', 'Connected. Reading signal data.');
+        }
+      }
+    } catch (e) {
+      setStatus('error', 'The board was disconnected. Plug it back in and connect again.');
+      S.mode = 'idle';
+      setButtons(false);
+    } finally {
+      try { reader.releaseLock(); } catch (e) {}
+    }
+  }
+
+  async function disconnectSerial() {
+    if (reader) { try { await reader.cancel(); } catch (e) {} }
+    if (pipeDone) { await pipeDone; }
+    if (port) { try { await port.close(); } catch (e) {} }
+    port = null; reader = null; pipeDone = null;
+  }
+
+  if ('serial' in navigator) {
+    navigator.serial.addEventListener('disconnect', e => {
+      if (port && e.target === port) {
+        setStatus('error', 'The board was unplugged. Plug it back in and connect again.');
+        S.mode = 'idle'; port = null;
+        setButtons(false);
+      }
+    });
+  }
+
+  // ---------------- Demo ----------------
+  let demoTimer = null;
+  function startDemo() {
+    stopAll().then(() => {
+      S.mode = 'demo';
+      setStatus('demo', 'Demo: simulated boards moving apart and back together.');
+      setButtons(true);
+      const t0 = performance.now();
+      let ema = null, seq = 0, lost = 0;
+      ingestLine('My MAC: 7C:DF:A1:00:00:01');
+      demoTimer = setInterval(() => {
+        const t = (performance.now() - t0) / 1000;
+        const trueD = 0.6 + 7 * (0.5 - 0.5 * Math.cos(t / 9)) + 9 * Math.max(0, Math.sin(t / 23)) ** 6;
+        const g = (Math.random() + Math.random() + Math.random() - 1.5) * 5;
+        const raw = -45 - 25 * Math.log10(trueD) + g;
+        seq += 5;
+        const ms = Math.round(performance.now() - t0);
+        if (raw < -88) {
+          lost += 5;
+          ingestLine('DATA,' + ms + ',LOST,nan,nan,nan,nan,' + seq + ',' + lost);
+          ingestLine('No signal from peer (out of range or not powered)');
+          return;
+        }
+        if (raw < -78 && Math.random() < 0.3) lost += 1;
+        ema = ema === null ? raw : 0.7 * ema + 0.3 * raw;
+        const peer = Math.round(ema + (Math.random() - 0.5) * 6);
+        ingestLine('DATA,' + ms + ',OK,' + raw.toFixed(1) + ',' + ema.toFixed(2) + ',' + peer + ',' +
+          (100 * lost / (seq + lost)).toFixed(2) + ',' + seq + ',' + lost);
+        ingestLine('Peer 7C:DF:A1:12:34:56 | I hear peer: ' + ema.toFixed(1) +
+          ' dBm [###] Demo | Peer hears me: ' + peer + ' dBm | Loss: ' +
+          (100 * lost / (seq + lost)).toFixed(1) + '% | ~' + trueD.toFixed(1) + ' m');
+      }, 500);
+    });
+  }
+
+  // ---------------- Controls ----------------
+  function setButtons(running) {
+    $('btnStop').disabled = !running;
+  }
+
+  async function stopAll() {
+    if (demoTimer) { clearInterval(demoTimer); demoTimer = null; }
+    await disconnectSerial();
+    S.mode = 'idle'; S.lost = true; S.rssi = null; S.peer = null; S.loss = null;
+    S.myMac = null; S.peerMac = null; S.recent = []; S.history = []; S.hasData = false;
+    setButtons(false);
+    updateReadouts();
+  }
+
+  $('btnConnect').addEventListener('click', connect);
+  $('btnDemo').addEventListener('click', startDemo);
+  $('btnStop').addEventListener('click', async () => {
+    await stopAll();
+    setStatus('idle', 'Stopped. Connect a board or run the demo.');
+  });
+
+  $('sRef').addEventListener('input', e => {
+    S.ref = parseFloat(e.target.value);
+    $('oRef').textContent = S.ref + ' dBm';
+    updateReadouts();
+  });
+  $('sN').addEventListener('input', e => {
+    S.n = parseFloat(e.target.value);
+    $('oN').textContent = S.n.toFixed(1);
+    updateReadouts();
+  });
+  $('btnCal').addEventListener('click', () => {
+    const a = S.recent.slice(-10);
+    if (!a.length) return;
+    const m = Math.round(a.reduce((x, y) => x + y, 0) / a.length);
+    S.ref = Math.max(-90, Math.min(-20, m));
+    $('sRef').value = S.ref;
+    $('oRef').textContent = S.ref + ' dBm';
+    updateReadouts();
+  });
+
+  updateReadouts();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

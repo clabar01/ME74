@@ -131,8 +131,9 @@ TaggedOut GPSOUT("[GPS] ");
 // =============================================================================
 // LORA: RFM95 transceiver (from transceiver.ino)
 // Changes from the original: transmitting no longer waits for the packet to
-// finish sending (that blocked everything else for ~50 ms every 3 s), and a
-// missing radio no longer stops the whole board.
+// finish sending (that blocked everything else for ~50 ms per packet), a
+// missing radio no longer stops the whole board, and packets go out every
+// 1 s (was 3 s) with a little random jitter.
 // =============================================================================
 namespace lora {
 
@@ -145,7 +146,12 @@ RH_RF95 rf95(RFM95_CS, RFM95_INT);
 bool ok = false;
 
 // Settings
-const unsigned long TX_INTERVAL = 3000;
+// One packet per second (~57 ms on air at SF7/125 kHz, ~6% of the time). Each
+// interval gets a random +/-150 ms so the two boards, which use the same period,
+// can't stay lined up and collide on every packet. Reflash BOTH boards: the
+// reading rate a board sees is set by how often the OTHER board transmits.
+const unsigned long TX_INTERVAL = 1000;
+const long TX_JITTER = 150;
 const unsigned long PLOT_INTERVAL = 500;
 const int CAL_SAMPLES = 20;
 const float FILTER_ALPHA = 0.25;
@@ -416,7 +422,7 @@ void service() {
   if (!txInProgress) receivePackets();
 
   if (!txInProgress && (int32_t)(millis() - nextTransmit) >= 0) {
-    nextTransmit = millis() + TX_INTERVAL;
+    nextTransmit = millis() + TX_INTERVAL + random(-TX_JITTER, TX_JITTER + 1);
     transmitPacket();
   }
 

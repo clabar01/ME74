@@ -8,7 +8,9 @@ strips the tag and forwards each line to the matching tab. Commands typed in a
 tab go back out through the same connection.
 
 Usage (from the repo root):
-  Everything (ME74_combined):
+  ME74_2IMUS (current): run  sh ME74_2IMUS/tools/build.sh
+    (writes ME74_2IMUS/ME74_test_dashboard.html; the ESP-NOW tab source is gui/espnow_dashboard.html)
+  Everything (ME74_combined, older):
     python ME74_combined/tools/build_dashboard.py ME74_combined/ME74_dashboard.html "ME74 Dashboard" ME74_combined \
         gps=gps-baseline/dashboard.html imu=gui/imu_dashboard.html \
         lora=gui/radio_dashboard.html espnow=<espnow_range_map.html>
@@ -216,6 +218,46 @@ PAGE = r"""<!doctype html>
   .chart-head label { margin-left: auto; display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
   #homeChart { width: 100%; height: 300px; display: block; }
   .help code { font: 12px ui-monospace, Menlo, Consolas, monospace; }
+  /* ---- Test panel: built to be read outside in sunlight ---- */
+  .card .big { font-size: 48px; }
+  .test-card { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 14px; }
+  .phase { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 14px 20px; border-radius: 12px;
+           border: 3px solid currentColor; color: var(--muted); }
+  .phase .word { font-size: 40px; font-weight: 900; letter-spacing: .04em; line-height: 1; }
+  .phase .count { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+  .phase .sub { font-size: 18px; font-weight: 600; color: var(--text); flex: 1; min-width: 220px; }
+  .phase.ready { color: var(--ok); } .phase.hold { color: var(--warn); } .phase.sampling { color: var(--accent); }
+  .phase.saved { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+  .phase.unsaved { color: var(--warn); } .phase.offline { color: var(--muted); }
+  #testMsg { font-size: 16px; font-weight: 600; min-height: 1.4em; margin: 0; }
+  #testMsg.bad { color: var(--bad); } #testMsg.warn { color: var(--warn); }
+  .test-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; }
+  .test-row label.field { display: flex; flex-direction: column; gap: 4px; font-size: 14px; font-weight: 700; color: var(--muted); }
+  .test-row input { font: inherit; font-size: 28px; font-weight: 800; width: 150px; padding: 8px 12px; border-radius: 10px;
+                    border: 2px solid var(--line); background: var(--bg); color: var(--text); font-variant-numeric: tabular-nums; }
+  .test-row input.narrow { width: 110px; }
+  button.huge { font-size: 22px; font-weight: 800; padding: 16px 28px; border-radius: 12px; min-height: 64px; }
+  button.huge.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+  button.mid { font-size: 16px; padding: 10px 16px; min-height: 46px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; }
+  .chip { font-size: 18px; font-weight: 800; padding: 8px 14px; border-radius: 10px; border: 2px solid var(--line);
+          font-variant-numeric: tabular-nums; }
+  .chip.done { border-color: var(--ok); color: var(--ok); }
+  .chip.low { border-color: var(--bad); color: var(--bad); }
+  .chip.skip { color: var(--muted); font-weight: 600; font-size: 15px; }
+  #saveInfo { font-size: 14px; color: var(--muted); }
+  .restore { display: none; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-radius: 10px;
+             border: 2px solid var(--warn); font-size: 16px; font-weight: 600; }
+  .restore.show { display: flex; }
+  .results-wrap { overflow-x: auto; }
+  table.results { border-collapse: collapse; font-size: 17px; font-variant-numeric: tabular-nums; min-width: 100%; }
+  table.results th, table.results td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  table.results th { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  table.results td .med { font-size: 20px; font-weight: 800; }
+  table.results td .sm { display: block; font-size: 13px; color: var(--muted); }
+  table.results td.lown { background: color-mix(in srgb, var(--bad) 18%, transparent); }
+  table.results td.lown .sm { color: var(--bad); font-weight: 700; }
+  table.results tr:first-child td { background-image: linear-gradient(color-mix(in srgb, var(--accent) 8%, transparent), color-mix(in srgb, var(--accent) 8%, transparent)); }
 </style>
 </head>
 <body>
@@ -243,7 +285,31 @@ PAGE = r"""<!doctype html>
         <label for="runLabel">Test name</label>
         <input id="runLabel" placeholder="e.g. walking 0-10m" autocomplete="off">
         <span class="help">Goes in every saved file name and in a <code>test</code> column, so each run is labeled.</span>
-        <button id="btnZeroAll" class="primary" disabled title="Set every distance to zero right now">Zero all</button>
+      </div>
+      <div class="card test-card" id="testCard">
+        <div class="restore" id="restoreBar"><span id="restoreText"></span>
+          <button class="mid primary" id="btnRestore">Restore</button><button class="mid" id="btnDiscard">Discard</button></div>
+        <div class="phase offline" id="phase"><span class="word" id="phaseWord">NOT CONNECTED</span>
+          <span class="count" id="phaseCount"></span><span class="sub" id="phaseSub">Connect the board to start</span></div>
+        <p id="testMsg"></p>
+        <div class="test-row">
+          <label class="field">Tape distance (m)<input id="tape" type="number" step="0.01" min="0" placeholder="--" inputmode="decimal"></label>
+          <label class="field">Step (m, blank = stay)<input id="testStep" class="narrow" type="number" step="0.01" placeholder="--" inputmode="decimal"></label>
+          <label class="field">Timeout (s)<input id="testTimeout" class="narrow" type="number" step="1" min="5" value="60" inputmode="numeric"></label>
+          <button id="btnZeroAll" class="huge" disabled title="GPS origin (30 s average) plus every other sensor's zero">Zero all</button>
+          <button id="btnTake" class="huge primary" disabled>Take samples</button>
+          <button id="btnCancel" class="huge danger" disabled>Cancel</button>
+          <button id="btnRedo" class="huge" disabled>Redo last point</button>
+        </div>
+        <div class="chips" id="chips"></div>
+        <div class="test-row" style="align-items:center">
+          <button id="btnFolder" class="mid">Choose save folder</button>
+          <button id="btnDlResults" class="mid" disabled>&#10515; Results CSV</button>
+          <button id="btnDlRaw" class="mid" disabled>&#10515; Raw samples CSV</button>
+          <button id="btnNewTest" class="mid" disabled>New test</button>
+          <span id="saveInfo"></span>
+        </div>
+        <div class="results-wrap"><table class="results" id="results"></table></div>
       </div>
 __CARDS__      <div class="card chart-card">
         <div class="chart-head">
@@ -251,11 +317,10 @@ __CARDS__      <div class="card chart-card">
           <div class="legend">
             __LEGEND__
           </div>
-          <label>Actual distance (tape), m <input class="small" id="tape" type="number" step="0.01" min="0" placeholder="--"></label>
         </div>
         <canvas id="homeChart"></canvas>
         <p class="help" style="margin-top:8px">The overview CSV saves one row per second with every technology's
-          distance side by side, the distances since zero, and the actual distance you type here, so you can compare them.</p>
+          distance side by side, the distances since zero, and the tape distance from the test panel, so you can compare them.</p>
       </div>
     </div>
   </section>
@@ -381,11 +446,11 @@ const REC = {
                    "traveled_m", "from_zero_m", "speed_mps", "tape_m"], rows: [] },
   lora:   { label: "LoRa", file: "lora",
             cols: ["pc_time", "elapsed_s", "test", "type", "from_node", "rssi_dbm", "snr_db", "firmware_dist_m",
-                   "ref_dist_m", "ref_rssi_dbm", "tape_m"], rows: [] },
+                   "ref_dist_m", "ref_rssi_dbm", "since_zero_m", "tape_m"], rows: [] },
   espnow: { label: "ESP-NOW", file: "espnow",
             cols: ["pc_time", "elapsed_s", "test", "board_ms", "status", "rssi_raw_dbm", "rssi_smoothed_dbm",
                    "peer_hears_me_dbm", "packet_loss_pct", "packets_rx", "packets_missed", "est_distance_m",
-                   "cal_rssi_1m_dbm", "cal_env_factor", "tape_m"], rows: [] },
+                   "cal_rssi_1m_dbm", "cal_env_factor", "since_zero_m", "tape_m"], rows: [] },
   console: { label: "Console", file: "console_log", cols: ["pc_time", "line"], rows: [] },
 };
 REC.imu2 = { label: "IMU 2", file: "imu2", cols: [...REC.imu.cols], rows: [] };
@@ -393,7 +458,10 @@ for (const m of ["gps", "imu", "imu2", "lora", "espnow"]) if (!(m in CHILDREN)) 
 const HAS = (m) => m in CHILDREN;
 let recT0 = null;
 const live = { gps: {}, lora: {}, espnow: {}, imu: {}, imu2: {} };
-const loraDev = { refDist: null, refRssi: null, calibrated: false };
+const loraDev = { refDist: null, refRssi: null, n: 2.0, calibrated: false };
+// LoRa packets arrive about once a second (firmware TX_INTERVAL 1000 ms on the other board)
+const LORA_FRESH_MS = 3000;
+const freshMs = (mod) => (mod === "lora" ? LORA_FRESH_MS : 3000);
 let loraPending = null;
 const DEG = 180 / Math.PI, G0 = 9.80665;
 
@@ -407,9 +475,9 @@ const runSlug = () => runName().replace(/\s+/g, "_").replace(/[^A-Za-z0-9._-]/g,
 const labelPart = () => (runSlug() ? "_" + runSlug() : "");
 
 // ---------- Zero points ----------
-// GPS: position at zero. LoRa / ESP-NOW: distance at zero. IMU: restart dead reckoning.
-const zero = { gps: null, lora: null, espnow: null };
-const gpsFixes = [];   // recent {t, lat, lon} for averaging the zero point
+// GPS: the firmware's origin (the "origin" command, 30 s average, HDOP <= 2), the one GPS reference.
+// LoRa / ESP-NOW: distance at zero (only used for the since_zero_m columns). IMU: restart dead reckoning.
+const zero = { lora: null, espnow: null };
 const events = [];     // written into the next overview row
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371008.8, r = Math.PI / 180;
@@ -424,9 +492,9 @@ function haversine(lat1, lon1, lat2, lon2) {
 const makeNav = () => ({ vx: 0, vy: 0, px: 0, py: 0, traveled: 0, speed: 0, still: 0, bx: 0, by: 0, lastT: null, recent: [], active: false });
 const NAVS = { imu: makeNav(), imu2: makeNav() };
 const IMUS = ["imu", "imu2"];
-function navUpdate(nav, wx, wy, lin, gyroMag, tSec) {
-  nav.recent.push([wx, wy]);
-  if (nav.recent.length > 100) nav.recent.shift();
+function navUpdate(nav, wx, wy, lin, gyroMag, tSec, nowMs) {
+  nav.recent.push([wx, wy, nowMs, lin]);    // [world x, world y, PC time (ms), motion accel]
+  while (nav.recent.length && nav.recent[0][2] < nowMs - 2000) nav.recent.shift();
   if (nav.lastT === null) { nav.lastT = tSec; return; }
   const dt = tSec - nav.lastT;
   nav.lastT = tSec;
@@ -441,38 +509,49 @@ function navUpdate(nav, wx, wy, lin, gyroMag, tSec) {
   nav.speed = Math.hypot(nav.vx, nav.vy);
   nav.traveled += nav.speed * dt;
 }
+// The last 1 s of samples becomes the sensor's offset, so hold still when zeroing.
+// Returns null on success, or the reason it couldn't zero. 8 samples = works in both
+// log mode (50 Hz) and normal printout (10 Hz).
+const NAV_MIN_SAMPLES = 8;
 function navZero(nav) {
-  const r = nav.recent.slice(-50);   // last ~1 s: taken as the sensor's offset (hold still when zeroing)
-  nav.bx = r.length ? r.reduce((a, x) => a + x[0], 0) / r.length : 0;
-  nav.by = r.length ? r.reduce((a, x) => a + x[1], 0) / r.length : 0;
+  const now = performance.now();
+  const r = nav.recent.filter((x) => x[2] > now - 1000);
+  if (r.length < NAV_MIN_SAMPLES) return { error: r.length ? `only ${r.length} samples in the last second` : "no data arriving" };
+  nav.bx = r.reduce((a, x) => a + x[0], 0) / r.length;
+  nav.by = r.reduce((a, x) => a + x[1], 0) / r.length;
   Object.assign(nav, { vx: 0, vy: 0, px: 0, py: 0, traveled: 0, speed: 0, still: 0, active: true });
+  const peak = Math.max(...r.map((x) => x[3]));
+  return { warn: peak > 0.5 ? `moved while zeroing (peak ${peak.toFixed(2)} m/s²), baseline may be off` : null };
 }
 
+// Zero one module right now (LoRa, ESP-NOW, IMUs). GPS goes through startZero (firmware origin).
+// Returns { ok, reason?, warn? }.
 function zeroModule(mod) {
-  const msg = (t) => consoleLine("[HOME] " + t, "SYS");
-  if (mod === "gps") {
-    const recent = gpsFixes.filter((f) => f.t > performance.now() - 3000);
-    if (!recent.length) { msg("GPS zero skipped: no fix yet"); return false; }
-    zero.gps = { lat: recent.reduce((a, f) => a + f.lat, 0) / recent.length, lon: recent.reduce((a, f) => a + f.lon, 0) / recent.length };
-  } else if (mod === "lora" || mod === "espnow") {
+  if (!HAS(mod)) return { ok: false, reason: "not in this dashboard" };
+  let warn = null;
+  if (mod === "lora" || mod === "espnow") {
+    if (!fresh(mod)) return { ok: false, reason: "no data arriving" };
+    if (mod === "espnow" && live.espnow.status !== "OK") return { ok: false, reason: "no signal from the other board" };
     const d = live[mod].dist;
-    if (d == null || !fresh(mod, mod === "lora" ? 8000 : 3000)) { msg(`${mod} zero skipped: no distance yet`); return false; }
+    if (d == null) return { ok: false, reason: mod === "lora" ? "not calibrated" : "no distance yet" };
     zero[mod] = d;
   } else if (IMUS.includes(mod)) {
-    navZero(NAVS[mod]);
-  }
+    if (!fresh(mod)) return { ok: false, reason: "no data arriving" };
+    const r = navZero(NAVS[mod]);
+    if (r.error) return { ok: false, reason: r.error };
+    warn = r.warn;
+  } else return { ok: false, reason: "zeroed through the GPS origin" };
   events.push("zero_" + mod);
-  msg("Zeroed " + mod);
-  return true;
+  return { ok: true, warn };
 }
 function sinceZero(mod) {
   if (mod === "gps") {
-    const g = live.gps;
-    return zero.gps && fresh("gps") && g.lat != null ? haversine(zero.gps.lat, zero.gps.lon, g.lat, g.lon) : null;
+    const g = live.gps;   // the firmware's distance from its origin
+    return fresh("gps") && g.origin && g.dist != null ? g.dist : null;
   }
   if (IMUS.includes(mod)) return NAVS[mod].active && fresh(mod) ? NAVS[mod].traveled : null;
   const d = live[mod].dist;
-  return zero[mod] != null && d != null && fresh(mod, mod === "lora" ? 8000 : 3000) ? d - zero[mod] : null;
+  return zero[mod] != null && d != null && fresh(mod) ? d - zero[mod] : null;
 }
 const num = (v) => { const x = parseFloat(v); return isFinite(x) ? x : null; };
 const tapeVal = () => num($("tape").value);
@@ -500,15 +579,14 @@ function recordLine(mod, body) {
     if (m.type === "status") {
       live.gps = { t: now, dist: m.dist, state: m.state, sats: m.sats, hdop: m.hdop, origin: m.origin_lat != null,
                    lat: m.state === "fix" ? m.lat : null, lon: m.state === "fix" ? m.lon : null };
-      if (m.state === "fix" && m.lat != null) {
-        gpsFixes.push({ t: now, lat: m.lat, lon: m.lon });
-        while (gpsFixes.length && gpsFixes[0].t < now - 10000) gpsFixes.shift();
-      }
       push("gps", ["status", m.state, m.sats, m.hdop, m.lat, m.lon, m.speed, m.utc, m.origin_lat, m.origin_lon, m.dist,
                    "", "", "", "", tapeVal()]);
+      if (m.state === "fix" && m.dist != null)
+        testSample("gps", { dist: m.dist, hdop: m.hdop, sats: m.sats, lat: m.lat, lon: m.lon, speed: m.speed });
     } else if (m.type === "result") {
       push("gps", ["result_" + m.mode + (m.ok ? "" : "_failed"), "", "", "", m.lat, m.lon, "", "", "", "", "",
                    m.true_m, m.gps_m, m.error_m, m.samples, tapeVal()]);
+      if (m.mode === "origin") onOriginResult(m);
     }
   } else if (IMUS.includes(mod)) {
     const nav = NAVS[mod];
@@ -529,11 +607,12 @@ function recordLine(mod, body) {
       rest = ["", ax, ay, az, "", "", "", "", "", "", roll, pitch, heading, num(kv.dt_ms), num(kv.Overruns)];
     } else return;
     const a = motionAccel(ax, ay, az, roll, pitch, heading);
-    navUpdate(nav, a.wx, a.wy, a.lin, gyroMag, tSec);
+    navUpdate(nav, a.wx, a.wy, a.lin, gyroMag, tSec, now);
     live[mod] = { t: now, ...a, roll, pitch, heading };
     push(mod, [...rest, a.total.toFixed(4), a.lin.toFixed(4), a.hor.toFixed(4), a.ver.toFixed(4),
                  nav.active ? nav.traveled.toFixed(3) : "", nav.active ? Math.hypot(nav.px, nav.py).toFixed(3) : "",
                  nav.active ? nav.speed.toFixed(3) : "", tapeVal()]);
+    if (nav.active) testSample(mod, { dist: nav.traveled, fromZero: Math.hypot(nav.px, nav.py) });
   } else if (mod === "lora") {
     let m;
     const r = (s) => new RegExp("^" + s.replace(/#/g, "(-?\\d+(?:\\.\\d+)?)"));
@@ -544,7 +623,11 @@ function recordLine(mod, body) {
       const p = loraPending; loraPending = null;
       if (p.rssi == null) return;
       live.lora = { t: now, rssi: p.rssi, snr: p.snr, dist };
-      push("lora", ["packet", p.from, p.rssi, p.snr, dist, loraDev.refDist, loraDev.refRssi, tapeVal()]);
+      push("lora", ["packet", p.from, p.rssi, p.snr, dist, loraDev.refDist, loraDev.refRssi, f3(sinceZero("lora")), tapeVal()]);
+      // Test samples use this packet's own RSSI, not the firmware's smoothed value (which still
+      // carries the previous point for ~10 packets). The smoothed value goes in the raw CSV too.
+      testSample("lora", { dist: loraRawDist(p.rssi), rssiRaw: p.rssi, snr: p.snr, smoothDist: dist,
+                           rssiSmooth: dist == null ? null : loraRssiFor(dist) });
     };
     if (loraPending && (m = body.match(r("Distance: # m")))) { finish(+m[1]); return; }
     if (loraPending && body === "Not calibrated.") { finish(null); return; }
@@ -558,6 +641,7 @@ function recordLine(mod, body) {
     if ((m = body.match(r("Reference RSSI: #")))) { loraDev.refRssi = +m[1]; return; }
     if ((m = body.match(r("Reference distance: #")))) { loraDev.refDist = +m[1]; return; }
     if ((m = body.match(/^Calibrated: (YES|NO)/))) { loraDev.calibrated = m[1] === "YES"; return; }
+    if ((m = body.match(r("Path loss exponent: #")))) { loraDev.n = +m[1]; return; }
   } else if (mod === "espnow") {
     if (!body.startsWith("DATA,")) return;
     const f = body.split(",");
@@ -566,13 +650,32 @@ function recordLine(mod, body) {
     const dist = smoothed === null ? null : espnowDist(smoothed);
     live.espnow = { t: now, status: f[2], rssi: smoothed, peer: num(f[5]), loss: num(f[6]), dist };
     push("espnow", [num(f[1]), f[2], num(f[3]), smoothed, num(f[5]), num(f[6]), num(f[7]), num(f[8]),
-                    dist === null ? null : dist.toFixed(3), num($("enRef").value), num($("enN").value), tapeVal()]);
+                    dist === null ? null : dist.toFixed(3), num($("enRef").value), num($("enN").value),
+                    f3(sinceZero("espnow")), tapeVal()]);
+    // f[3] is the average of the packets in this 500 ms window ("raw"); f[4] is the running average
+    const raw = num(f[3]);
+    if (f[2] === "OK" && raw !== null)
+      testSample("espnow", { dist: espnowDist(raw), rssiRaw: raw, rssiSmooth: smoothed, smoothDist: dist });
   }
+}
+
+// LoRa distance from one packet's RSSI, with the firmware's calibration (learned from its
+// "status" / calibration lines). Null until the LoRa link has been calibrated.
+function loraRawDist(rssi) {
+  const d = loraDev;
+  if (!d.calibrated || d.refRssi == null || d.refDist == null || !(d.n > 0)) return null;
+  return d.refDist * Math.pow(10, (d.refRssi - rssi) / (10 * d.n));
+}
+// The smoothed RSSI the firmware used for a distance (it doesn't print it), for the raw CSV
+function loraRssiFor(dist) {
+  const d = loraDev;
+  if (!d.calibrated || d.refRssi == null || d.refDist == null || !(dist > 0)) return null;
+  return d.refRssi - 10 * d.n * Math.log10(dist / d.refDist);
 }
 
 // Overview: one row per second with every technology side by side
 const history = [];   // {t, gps, lora, espnow}
-function fresh(mod, ms = 3000) { return live[mod].t && performance.now() - live[mod].t < ms; }
+function fresh(mod, ms = freshMs(mod)) { return !!live[mod].t && performance.now() - live[mod].t < ms; }
 const f3 = (v) => (v == null ? null : (+v).toFixed(3));
 const OV = [
   ["gps_from_zero_m", "gps", () => f3(sinceZero("gps"))],
@@ -593,7 +696,7 @@ REC.home.cols = ["pc_time", "elapsed_s", "test", "tape_m", "event", ...OV.map((c
 setInterval(() => {
   if (!port) return;
   const snap = {
-    g: fresh("gps") ? live.gps : {}, l: fresh("lora", 8000) ? live.lora : {},
+    g: fresh("gps") ? live.gps : {}, l: fresh("lora") ? live.lora : {},
     e: fresh("espnow") && live.espnow.status === "OK" ? live.espnow : {}, i: fresh("imu") ? live.imu : {},
   };
   push("home", [tapeVal(), events.splice(0).join(";"), ...OV.map((c) => c[2](snap) ?? "")]);
@@ -631,15 +734,14 @@ function renderHome() {
   const g = live.gps, gOk = fresh("gps");
   const gv = gpsShown();
   $("hd-gps").innerHTML = (gv != null ? fmtM(gv) : "--") + "<small>m</small>";
-  $("hm-gps").textContent = zero.gps ? "Straight-line distance from your zero point" : "Distance from the GPS origin (press Zero to start from here)";
-  zr("gps", zero.gps ? "Zero set at your position" : "Not zeroed");
+  zr("gps", gpsOrigin.pending ? "Setting origin..." : g.origin ? "Origin set" + (gpsOrigin.samples ? ` (${gpsOrigin.samples} fixes)` : "") : "No origin");
   $("hx-gps").textContent = gOk ? `${g.state === "fix" ? "Fix" : g.state}, ${g.sats ?? 0} satellites` +
     (g.state === "fix" ? `, HDOP ${Number(g.hdop).toFixed(2)}` : "") : "--";
   $("hh-gps").textContent = !gOk ? "" : g.state === "no_data" ? "No data from the GPS module" :
-    g.state !== "fix" ? "Waiting for a fix (go outside)" : !g.origin && !zero.gps ? "Press Zero to measure from here" : "";
+    g.state !== "fix" ? "Waiting for a fix (go outside)" : !g.origin ? "Press Zero all (or Zero) to set the origin here" : "";
   }
   if (HAS("lora")) {
-  const l = live.lora, lOk = fresh("lora", 8000);
+  const l = live.lora, lOk = fresh("lora");
   $("hd-lora").innerHTML = (lOk && l.dist != null ? fmtM(l.dist) : "--") + "<small>m</small>";
   $("hx-lora").textContent = lOk ? `RSSI ${l.rssi} dBm` + (l.snr != null ? ` · SNR ${l.snr.toFixed(1)} dB` : "") : "--";
   $("hh-lora").textContent = l.calibrating ? `Calibrating ${l.calibrating}...` :
@@ -662,21 +764,455 @@ function renderHome() {
   $("hh-" + k).textContent = iOk && !nav.active ? "Hold the IMU still, then press Zero" : "";
   zr(k, nav.active ? (nav.still > 0.25 ? "Zeroed · still" : "Zeroed · moving") : "Not zeroed");
   }
-  $("btnZeroAll").disabled = !port;
-  for (const mod of Object.keys(CHILDREN)) { const b = $("zb-" + mod); if (b) b.disabled = !port; }
+  const busy = !!zeroRun || !!sampling;
+  for (const mod of Object.keys(CHILDREN)) { const b = $("zb-" + mod); if (b) b.disabled = !port || busy; }
+  renderTest();
   if (currentTab === "home") drawHome();
 }
 setInterval(renderHome, 500);
-function gpsShown() {
-  const z = sinceZero("gps");
-  if (z != null) return z;
-  return !zero.gps && fresh("gps") && live.gps.dist != null ? live.gps.dist : null;
-}
+const gpsShown = () => sinceZero("gps");   // firmware distance from its origin
 for (const mod of Object.keys(CHILDREN)) {
   const b = $("zb-" + mod);
-  if (b) b.onclick = () => { zeroModule(mod); renderHome(); };
+  if (!b) continue;
+  b.onclick = () => {
+    if (mod === "gps") { startZero(["gps"]); return; }
+    const r = zeroModule(mod);
+    const name = CHILDREN[mod].label;
+    if (r.ok) setMsg(`Zeroed ${name}` + (r.warn ? ` (${r.warn})` : ""), r.warn ? "warn" : "");
+    else setMsg(`${name} not zeroed: ${r.reason}`, "bad");
+    renderHome();
+  };
 }
-$("btnZeroAll").onclick = () => { for (const mod of Object.keys(CHILDREN)) zeroModule(mod); renderHome(); };
+$("btnZeroAll").onclick = () => startZero(Object.keys(CHILDREN));
+
+// ---------- Messages ----------
+function setMsg(text, cls = "") {
+  const el = $("testMsg");
+  el.textContent = text; el.className = cls;
+  if (text) consoleLine("[HOME] " + text, "SYS");
+}
+const NAME = (m) => CHILDREN[m].label;
+const skipText = (list) => list.map(([m, why]) => `${NAME(m)} (${why})`).join(", ");
+const fx = (v, d) => (v == null || !isFinite(v) ? "" : (+v).toFixed(d));   // number for CSV, blank if missing
+
+// ---------- Zero all: firmware GPS origin (30 s), everything else at the END ----------
+// The other sensors are zeroed when the countdown ends, so the IMU offset comes from the
+// last second of standing still. Only sensors that are sending fresh data get zeroed.
+const ORIGIN_MS = 30000;        // firmware ORIGIN_AVG_MS
+const SHORT_ZERO_MS = 3000;     // countdown when GPS isn't part of it (fresh IMU baseline)
+const ORIGIN_WAIT_MS = 8000;    // extra wait for the firmware's origin result
+const gpsOrigin = { pending: false, samples: null };
+let zeroRun = null;
+
+function startZero(mods) {
+  if (!port || zeroRun || sampling) return;
+  mods = mods.filter(HAS);
+  const skipped = [], pend = [];
+  let gps = false;
+  for (const m of mods) {
+    if (m === "gps") {
+      if (!fresh("gps")) skipped.push(["gps", "no data arriving"]);
+      else if (live.gps.state !== "fix") skipped.push(["gps", "no fix"]);
+      else gps = true;
+    } else if (fresh(m)) pend.push(m);       // checked again when the countdown ends
+    else skipped.push([m, "no data arriving"]);
+  }
+  if (!gps && !pend.length) { setMsg("Nothing zeroed: " + skipText(skipped), "bad"); return; }
+  if (gps) { send("origin"); gpsOrigin.pending = true; consoleLine("> origin", "SYS"); }
+  lastOutcome = null;
+  zeroRun = { gps, pend, skipped, done: [], warns: [], phase: "hold", gpsResult: null,
+              endAt: performance.now() + (gps ? ORIGIN_MS : SHORT_ZERO_MS) };
+  setMsg("");
+  renderHome();
+}
+function tickZero() {
+  const z = zeroRun, now = performance.now();
+  if (!z) return;
+  if (z.phase === "hold" && now >= z.endAt) {
+    for (const m of z.pend) {
+      const r = zeroModule(m);
+      if (r.ok) { z.done.push(m); if (r.warn) z.warns.push(`${NAME(m)} ${r.warn}`); }
+      else z.skipped.push([m, r.reason]);
+    }
+    z.pend = [];
+    if (z.gps && !z.gpsResult) { z.phase = "waitgps"; z.waitUntil = now + ORIGIN_WAIT_MS; }
+    else finishZero();
+  } else if (z.phase === "waitgps" && now >= z.waitUntil) {
+    send("cancel");
+    z.gpsResult = { ok: false, msg: "no answer from the GPS" };
+    finishZero();
+  }
+}
+function onOriginResult(m) {
+  gpsOrigin.pending = false;
+  if (m.ok) { gpsOrigin.samples = m.samples; events.push("zero_gps"); }
+  const z = zeroRun;
+  if (z && z.gps && !z.gpsResult) {
+    z.gpsResult = m;
+    if (z.phase === "waitgps") finishZero();
+  }
+}
+function finishZero() {
+  const z = zeroRun;
+  zeroRun = null;
+  gpsOrigin.pending = false;
+  if (z.gps) {
+    const g = z.gpsResult || {};
+    if (g.ok) z.done.unshift("gps");
+    else z.skipped.unshift(["gps", g.cancelled ? "cancelled" : g.samples === 0 ? "origin failed: no fixes with HDOP 2 or better"
+                                  : "origin failed" + (g.msg ? ": " + g.msg : "")]);
+  }
+  const parts = [];
+  if (z.done.length) parts.push("Zeroed " + z.done.map(NAME).join(", "));
+  if (z.skipped.length) parts.push("Not zeroed: " + skipText(z.skipped));
+  if (z.warns.length) parts.push(z.warns.join("; "));
+  setMsg(parts.join(" · "), !z.done.length ? "bad" : z.skipped.length || z.warns.length ? "warn" : "");
+  renderHome();
+}
+function cancelZero() {
+  const z = zeroRun;
+  if (!z) return;
+  zeroRun = null;
+  if (z.gps && !z.gpsResult) send("cancel");
+  gpsOrigin.pending = false;
+  setMsg(z.done.length ? `GPS origin cancelled (${z.done.map(NAME).join(", ")} were zeroed)` : "Zero cancelled: nothing was zeroed", "warn");
+  renderHome();
+}
+
+// ---------- Test workflow: 30 new readings per sensor at each tape mark ----------
+const N_SAMPLES = 30, LOW_N = 10;
+const TEST_ORDER = ["gps", "lora", "espnow", "imu", "imu2"].filter(HAS);
+const TEST = { points: [], samples: [], stamp: null, slug: "" };
+let sampling = null;      // the point being sampled
+let lastRun = null;       // the last point (for the progress chips)
+let lastOutcome = null;   // {word, cls, sub} shown after a point until the next action
+let tableDirty = true;
+let restorePending = null;
+
+function sampleReady(mod) {
+  if (!fresh(mod)) return "no data arriving";
+  if (mod === "gps" && live.gps.state !== "fix") return "no fix";
+  if (mod === "gps" && !live.gps.origin) return "no origin, press Zero all";
+  if (mod === "espnow" && live.espnow.status !== "OK") return "no signal from the other board";
+  if (IMUS.includes(mod) && !NAVS[mod].active) return "not zeroed";
+  return null;
+}
+function takeSamples() {
+  if (!port || zeroRun || sampling) return;
+  if (restorePending) { setMsg("Restore or discard the previous test first (yellow bar above)", "bad"); return; }
+  const tape = tapeVal();
+  if (tape == null) { setMsg("Type the tape distance first", "bad"); $("tape").focus(); return; }
+  const timeout = Math.max(5, num($("testTimeout").value) ?? 60);
+  const sensors = {}, skipped = [];
+  for (const m of TEST_ORDER) {
+    const why = sampleReady(m);
+    if (why) skipped.push([m, why]); else sensors[m] = { rows: [] };
+  }
+  if (!Object.keys(sensors).length) { setMsg("No sensor is ready: " + skipText(skipped), "bad"); return; }
+  const notes = [];
+  if (skipped.length) notes.push("Skipped " + skipText(skipped));
+  if (sensors.lora && loraRawDist(-60) == null) {
+    send("status");   // asks the firmware for its calibration (in case it was calibrated before connecting)
+    if (!loraDev.calibrated) notes.push("LoRa not calibrated: RSSI is recorded, distance stays blank");
+  }
+  if (!TEST.stamp) { TEST.stamp = fileStamp(new Date()); TEST.slug = runSlug(); }
+  lastOutcome = null;
+  sampling = { point: TEST.points.length + 1, tape, test: runName(), t0: performance.now(),
+               startIso: new Date().toISOString(), timeoutMs: timeout * 1000, sensors, skipped };
+  lastRun = sampling;
+  setMsg(notes.join(" · "), notes.length ? "warn" : "");
+  renderHome();
+}
+// Called by recordLine for every new reading; only readings after "Take samples" count
+function testSample(mod, v) {
+  const s = sampling;
+  if (!s || !s.sensors[mod] || s.sensors[mod].rows.length >= N_SAMPLES) return;
+  s.sensors[mod].rows.push({ pc_time: new Date().toISOString(), t_s: (performance.now() - s.t0) / 1000, ...v });
+  if (Object.values(s.sensors).every((b) => b.rows.length >= N_SAMPLES)) finishPoint();
+}
+function tickSampling() {
+  if (sampling && performance.now() - sampling.t0 >= sampling.timeoutMs) finishPoint();
+}
+// Quartiles by linear interpolation (same as numpy's default / Excel QUARTILE.INC)
+function quantile(sorted, q) {
+  const pos = (sorted.length - 1) * q, lo = Math.floor(pos), hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+function stats(values) {
+  const v = values.filter((x) => x != null && isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return { med: null, iqr: null };
+  return { med: quantile(v, 0.5), iqr: quantile(v, 0.75) - quantile(v, 0.25) };
+}
+const medOf = (rows, k) => stats(rows.map((r) => r[k])).med;
+
+function finishPoint() {
+  const s = sampling;
+  sampling = null;
+  const tape = tapeVal() ?? s.tape;   // a typo fixed while sampling still counts
+  const p = { point: s.point, test: s.test, pc_time: s.startIso, tape, sensors: {} };
+  const short = [];
+  for (const m of TEST_ORDER) {
+    const b = s.sensors[m];
+    if (!b) { p.sensors[m] = { n: 0, skipped: true }; continue; }
+    const rows = b.rows, d = stats(rows.map((r) => r.dist));
+    const e = { n: rows.length, timedOut: rows.length < N_SAMPLES, med: d.med, iqr: d.iqr,
+                err: d.med == null ? null : d.med - tape };
+    if (m === "gps") e.hdop = medOf(rows, "hdop");
+    if (m === "lora" || m === "espnow") e.rssi = medOf(rows, "rssiRaw");
+    if (m === "lora") e.snr = medOf(rows, "snr");
+    p.sensors[m] = e;
+    if (e.timedOut) short.push(`${NAME(m)} n=${e.n}`);
+    rows.forEach((r, i) => TEST.samples.push({ point: s.point, test: s.test, tape, sensor: m, sample: i + 1, ...r }));
+  }
+  TEST.points.push(p);
+  events.push("point_" + p.point);
+  const step = num($("testStep").value);
+  if (step) $("tape").value = String(+(tape + step).toFixed(3));
+  tableDirty = true;
+  persist();
+  const next = tapeVal();
+  const sub = `Point ${p.point} at ${tape.toFixed(2)} m done` + (short.length ? ` · timed out: ${short.join(", ")}` : "") +
+              (next != null ? ` · next: ${next.toFixed(2)} m` : "");
+  setMsg(sub, short.length ? "warn" : "");
+  if (saveDir) {
+    lastOutcome = { word: "SAVING", cls: "sampling", sub };
+    autosave().then((ok) => {
+      lastOutcome = ok ? { word: "SAVED", cls: "saved", sub }
+                       : { word: "NOT SAVED", cls: "unsaved", sub: "Autosave failed: see below, then download both CSVs" };
+      renderHome();
+    });
+  } else {
+    lastOutcome = { word: "RECORDED", cls: "unsaved", sub: sub + " · not in a file yet: download both CSVs or choose a save folder" };
+  }
+  renderHome();
+}
+function cancelSampling() {
+  if (!sampling) return;
+  const n = sampling.point;
+  sampling = null;
+  setMsg(`Point ${n} cancelled: nothing recorded`, "warn");
+  renderHome();
+}
+function redoLast() {
+  if (!TEST.points.length || sampling || zeroRun) return;
+  const p = TEST.points[TEST.points.length - 1];
+  if (!confirm(`Delete point ${p.point} (${p.tape.toFixed(2)} m) so you can take it again?`)) return;
+  TEST.points.pop();
+  TEST.samples = TEST.samples.filter((x) => x.point !== p.point);
+  $("tape").value = String(p.tape);
+  events.push("redo_point_" + p.point);
+  lastRun = null; lastOutcome = null; tableDirty = true;
+  persist();
+  autosave();
+  setMsg(`Point ${p.point} removed. Stand at ${p.tape.toFixed(2)} m and press Take samples.`, "warn");
+  renderHome();
+}
+function newTest() {
+  if (sampling || zeroRun || !TEST.points.length) return;
+  if (!confirm("Start a new test? This clears the results table. Saved files are kept; download the CSVs first if they aren't saved.")) return;
+  Object.assign(TEST, { points: [], samples: [], stamp: null, slug: "" });
+  lastRun = null; lastOutcome = null; tableDirty = true; saveErr = null; lastSaveAt = null;
+  persist();
+  setMsg("New test started");
+  renderHome();
+}
+
+// ---------- Results / raw-samples CSV (one header row, plain numbers: loads with MATLAB readtable) ----------
+function toCsv(cols, rows) {
+  const esc = (v) => v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+  return [cols, ...rows].map((r) => r.map(esc).join(",")).join("\n") + "\n";
+}
+const RES_EXTRA = { gps: [["gps_hdop_median", "hdop", 2]], lora: [["lora_rssi_median_dbm", "rssi", 1], ["lora_snr_median_db", "snr", 2]],
+                    espnow: [["espnow_rssi_median_dbm", "rssi", 2]] };
+function resultsCsv() {
+  const cols = ["point", "test", "pc_time", "tape_m"];
+  for (const m of TEST_ORDER) {
+    cols.push(`${m}_n`, `${m}_median_m`, `${m}_iqr_m`, `${m}_error_m`, `${m}_timed_out`);
+    for (const [c] of RES_EXTRA[m] || []) cols.push(c);
+  }
+  const rows = TEST.points.map((p) => {
+    const r = [p.point, p.test, p.pc_time, fx(p.tape, 3)];
+    for (const m of TEST_ORDER) {
+      const e = p.sensors[m] || { n: 0, skipped: true };
+      r.push(e.n, fx(e.med, 3), fx(e.iqr, 3), fx(e.err, 3), e.skipped ? "" : e.timedOut ? 1 : 0);
+      for (const [, k, d] of RES_EXTRA[m] || []) r.push(fx(e[k], d));
+    }
+    return r;
+  });
+  return toCsv(cols, rows);
+}
+const RAW_COLS = ["point", "test", "tape_m", "pc_time", "t_s", "sensor", "sample", "dist_m", "smoothed_dist_m",
+                  "rssi_raw_dbm", "rssi_smoothed_dbm", "snr_db", "hdop", "sats", "lat", "lon", "speed_mps", "imu_from_zero_m"];
+function rawCsv() {
+  return toCsv(RAW_COLS, TEST.samples.map((s) => [s.point, s.test, fx(s.tape, 3), s.pc_time, fx(s.t_s, 3), s.sensor, s.sample,
+    fx(s.dist, 3), fx(s.smoothDist, 3), fx(s.rssiRaw, 2), fx(s.rssiSmooth, 2), fx(s.snr, 2), fx(s.hdop, 2), fx(s.sats, 0),
+    fx(s.lat, 7), fx(s.lon, 7), fx(s.speed, 2), fx(s.fromZero, 3)]));
+}
+const testPart = () => (TEST.slug ? "_" + TEST.slug : "");
+const resultsName = () => `ME74_results${testPart()}_${TEST.stamp}.csv`;
+const rawName = () => `ME74_raw_samples${testPart()}_${TEST.stamp}.csv`;
+
+// ---------- Autosave: a folder picked once (Chrome / Edge); otherwise the download buttons ----------
+const canPickFolder = typeof window.showDirectoryPicker === "function";
+let saveDir = null, saveErr = null, lastSaveAt = null, folderErr = null, backupErr = null;
+let saveChain = Promise.resolve(true);
+async function chooseFolder() {
+  try {
+    saveDir = await window.showDirectoryPicker({ id: "me74-tests", mode: "readwrite" });
+    folderErr = saveErr = null;
+    if (TEST.points.length) await autosave();
+  } catch (e) {
+    if (e.name !== "AbortError") { saveDir = null; folderErr = e.message || e.name; }
+  }
+  renderHome();
+}
+async function writeFile(name, text) {
+  const h = await saveDir.getFileHandle(name, { create: true });
+  const w = await h.createWritable();
+  await w.write(text);
+  await w.close();
+}
+function autosave() {
+  if (!saveDir || !TEST.stamp) return Promise.resolve(false);
+  saveChain = saveChain.then(async () => {
+    try {
+      if (saveDir.queryPermission && (await saveDir.queryPermission({ mode: "readwrite" })) !== "granted")
+        throw new Error("lost permission to the folder: press Choose save folder again");
+      await writeFile(resultsName(), resultsCsv());
+      await writeFile(rawName(), rawCsv());
+      saveErr = null; lastSaveAt = new Date();
+      return true;
+    } catch (e) {
+      saveErr = e.message || String(e);
+      consoleLine("[HOME] Autosave failed: " + saveErr, "SYS");
+      return false;
+    }
+  });
+  return saveChain;
+}
+function saveInfoText() {
+  const parts = [];
+  if (!canPickFolder) parts.push("Folder saving isn't available in this browser: use the two download buttons.");
+  else if (folderErr) parts.push(`Folder saving doesn't work here (${folderErr}): use the two download buttons.`);
+  else if (saveDir) parts.push(`Autosaving to folder "${saveDir.name}"` + (lastSaveAt ? `, last saved ${lastSaveAt.toLocaleTimeString()}` : ""));
+  else parts.push("No save folder: results are kept in this page and backed up in the browser. Download both CSVs before closing.");
+  if (saveErr) parts.push("LAST AUTOSAVE FAILED: " + saveErr);
+  if (backupErr) parts.push("Browser backup failed: " + backupErr);
+  return parts.join(" · ");
+}
+
+// ---------- Browser backup, so a crash or reload doesn't lose the test ----------
+const BACKUP_KEY = "me74_test_backup_v1";
+function persist() {
+  try {
+    if (!TEST.points.length) localStorage.removeItem(BACKUP_KEY);
+    else localStorage.setItem(BACKUP_KEY, JSON.stringify({ savedAt: new Date().toISOString(), test: TEST,
+      tape: $("tape").value, step: $("testStep").value, timeout: $("testTimeout").value, name: $("runLabel").value }));
+    backupErr = null;
+  } catch (e) { backupErr = e.message || String(e); }
+}
+function offerRestore() {
+  let b = null;
+  try { b = JSON.parse(localStorage.getItem(BACKUP_KEY) || "null"); } catch (e) {}
+  if (!b || !b.test || !b.test.points || !b.test.points.length) return;
+  restorePending = b;
+  $("restoreText").textContent = `A test from ${new Date(b.savedAt).toLocaleString()} (${b.test.points.length} points) is still in this browser.`;
+  $("restoreBar").classList.add("show");
+}
+$("btnRestore").onclick = () => {
+  const b = restorePending;
+  if (!b) return;
+  Object.assign(TEST, b.test);
+  $("tape").value = b.tape ?? ""; $("testStep").value = b.step ?? ""; $("testTimeout").value = b.timeout || 60;
+  if (!$("runLabel").value) $("runLabel").value = b.name || "";
+  restorePending = null; $("restoreBar").classList.remove("show");
+  tableDirty = true;
+  setMsg(`Restored ${TEST.points.length} points. Choose the save folder again, or download the CSVs.`, "warn");
+  renderHome();
+};
+$("btnDiscard").onclick = () => {
+  if (!confirm("Discard the old test? It can't be recovered afterwards.")) return;
+  restorePending = null; $("restoreBar").classList.remove("show");
+  try { localStorage.removeItem(BACKUP_KEY); } catch (e) {}
+  renderHome();
+};
+
+// ---------- Test panel rendering ----------
+function renderTest() {
+  const now = performance.now();
+  let cls, word, count = "", sub;
+  if (!port) { cls = "offline"; word = "NOT CONNECTED"; sub = "Connect the board to start"; }
+  else if (zeroRun) {
+    cls = "hold"; word = "HOLD STILL";
+    if (zeroRun.phase === "hold") {
+      count = Math.max(0, Math.ceil((zeroRun.endAt - now) / 1000)) + " s";
+      sub = "Zeroing " + [...(zeroRun.gps ? ["GPS origin"] : []), ...zeroRun.pend.map(NAME)].join(", ") + ". Don't move the boards.";
+    } else sub = "Waiting for the GPS origin result...";
+  } else if (sampling) {
+    cls = "sampling"; word = "SAMPLING";
+    count = `${Math.floor((now - sampling.t0) / 1000)} s`;
+    sub = `Point ${sampling.point} at ${sampling.tape.toFixed(2)} m: stay on the mark (timeout ${sampling.timeoutMs / 1000} s)`;
+  } else if (lastOutcome) ({ cls, word, sub } = lastOutcome);
+  else {
+    cls = "ready"; word = "READY";
+    const t = tapeVal();
+    sub = TEST.points.length ? `${TEST.points.length} points recorded` + (t != null ? ` · next: ${t.toFixed(2)} m` : "")
+                             : "Zero all, then Take samples at each tape mark";
+  }
+  $("phase").className = "phase " + cls;
+  $("phaseWord").textContent = word; $("phaseCount").textContent = count; $("phaseSub").textContent = sub;
+
+  const busy = !!zeroRun || !!sampling, has = TEST.points.length > 0;
+  $("btnZeroAll").disabled = !port || busy;
+  $("btnTake").disabled = !port || busy || !!restorePending;
+  $("btnCancel").disabled = !busy;
+  $("btnRedo").disabled = !has || busy;
+  $("btnNewTest").disabled = !has || busy;
+  $("btnDlResults").disabled = $("btnDlRaw").disabled = !has;
+  $("btnFolder").style.display = canPickFolder && !folderErr ? "" : "none";
+  $("btnFolder").textContent = saveDir ? "Change save folder" : "Choose save folder";
+  $("saveInfo").textContent = saveInfoText();
+  $("saveInfo").style.color = saveErr || backupErr ? "var(--bad)" : "";
+
+  const r = sampling || lastRun;
+  $("chips").innerHTML = !r ? "" : TEST_ORDER.map((m) => {
+    const b = r.sensors[m];
+    if (!b) { const why = (r.skipped.find((x) => x[0] === m) || [])[1] || "skipped"; return `<span class="chip skip">${NAME(m)}: ${why}</span>`; }
+    const n = b.rows.length, c = n >= N_SAMPLES ? "done" : r !== sampling && n < LOW_N ? "low" : "";
+    return `<span class="chip ${c}">${NAME(m)} ${n}/${N_SAMPLES}</span>`;
+  }).join("");
+
+  if (tableDirty) { tableDirty = false; renderTable(); }
+}
+function renderTable() {
+  const t = $("results");
+  if (!TEST.points.length) { t.innerHTML = ""; return; }
+  const sgn = (v) => (v >= 0 ? "+" : "") + v.toFixed(2);
+  let h = `<tr><th>Point</th><th>Tape (m)</th>${TEST_ORDER.map((m) => `<th>${NAME(m)} (m)</th>`).join("")}</tr>`;
+  for (const p of [...TEST.points].reverse()) {     // newest first
+    h += `<tr><td><span class="med">${p.point}</span></td><td><span class="med">${p.tape.toFixed(2)}</span></td>`;
+    for (const m of TEST_ORDER) {
+      const e = p.sensors[m] || { n: 0, skipped: true };
+      if (e.skipped) { h += `<td><span class="med">--</span><span class="sm">skipped</span></td>`; continue; }
+      const low = e.n < LOW_N ? " lown" : "";
+      const med = e.med == null ? "--" : e.med.toFixed(2);
+      const sm = e.med == null ? `n ${e.n} · no distance` : `IQR ${e.iqr.toFixed(2)} · n ${e.n} · err ${sgn(e.err)}`;
+      h += `<td class="${low.trim()}"><span class="med">${med}</span><span class="sm">${sm}</span></td>`;
+    }
+    h += "</tr>";
+  }
+  t.innerHTML = h;
+}
+setInterval(() => { tickZero(); tickSampling(); renderTest(); }, 250);
+$("btnTake").onclick = takeSamples;
+$("btnCancel").onclick = () => (sampling ? cancelSampling() : cancelZero());
+$("btnRedo").onclick = redoLast;
+$("btnNewTest").onclick = newTest;
+$("btnFolder").onclick = chooseFolder;
+$("btnDlResults").onclick = () => download(resultsName(), new Blob([resultsCsv()], { type: "text/csv" }));
+$("btnDlRaw").onclick = () => download(rawName(), new Blob([rawCsv()], { type: "text/csv" }));
+for (const id of ["tape", "testStep", "testTimeout"]) $(id).addEventListener("change", () => { if (TEST.points.length) persist(); });
+offerRestore();
 
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 function drawHome() {
@@ -727,8 +1263,8 @@ function csvText(mod) {
   const esc = (v) => v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
   return [REC[mod].cols, ...REC[mod].rows].map((r) => r.map(esc).join(",")).join("\n") + "\n";
 }
-function fileStamp() {
-  const d = recT0 || new Date(), p = (x) => String(x).padStart(2, "0");
+function fileStamp(at) {
+  const d = at || recT0 || new Date(), p = (x) => String(x).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
 }
 function download(name, blob) {
@@ -797,7 +1333,7 @@ $("btnClearData").onclick = () => {
   history.length = 0; recT0 = null;
   updateSaveButtons(); drawHome();
 };
-window.addEventListener("beforeunload", (e) => { if (totalRows()) { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("beforeunload", (e) => { if (totalRows() || TEST.points.length) { e.preventDefault(); e.returnValue = ""; } });
 
 // ---------- Console ----------
 for (const k of Object.keys(show)) {
@@ -851,11 +1387,14 @@ async function connect() {
   for (const [mod, c] of Object.entries(CHILDREN)) {
     frames[mod].contentWindow.postMessage({ me74: 1, kind: "connect", button: c.button }, "*");
   }
-  setTimeout(() => { send("info\n"); send("state\n"); }, 400);
+  // "status" reports the LoRa calibration, which the test samples need for their raw-RSSI distance
+  setTimeout(() => { send("info\n"); send("state\n"); send("status\n"); }, 400);
   renderRun();
 }
 
 async function disconnect(reason) {
+  if (sampling) { sampling = null; setMsg("Board disconnected: the point was cancelled, nothing recorded", "bad"); }
+  if (zeroRun) { zeroRun = null; gpsOrigin.pending = false; setMsg("Board disconnected: zeroing cancelled", "bad"); }
   for (const f of Object.values(frames)) f.contentWindow.postMessage({ me74: 1, kind: "disconnect" }, "*");
   try { if (reader) await reader.cancel(); } catch (e) {}
   try { if (pipeDone) await pipeDone; } catch (e) {}
@@ -947,7 +1486,7 @@ selectTab("home");
 </html>
 """
 
-CARD_HTML = {'gps': '      <div class="card" id="card-gps">\n        <h2><span class="swatch" style="background:#2F80ED"></span>GPS <span class="state" id="hs-gps"></span></h2>\n        <div class="big" id="hd-gps">--<small>m</small></div>\n        <div class="method" id="hm-gps">Distance from the GPS origin (press Zero to start from here)</div>\n        <div class="detail" id="hx-gps">--</div>\n        <div class="zero-row"><span id="hz-gps">Not zeroed</span><button id="zb-gps" disabled>Zero</button></div>\n        <div class="hint" id="hh-gps"></div>\n        <div class="foot"><span id="ha-gps">no data</span><a data-open="gps">Open GPS tab</a></div>\n      </div>\n', 'lora': '      <div class="card" id="card-lora">\n        <h2><span class="swatch" style="background:#E07B39"></span>LoRa radio <span class="state" id="hs-lora"></span></h2>\n        <div class="big" id="hd-lora">--<small>m</small></div>\n        <div class="method">Distance from the reference node (the other board), from signal strength</div>\n        <div class="detail" id="hx-lora">--</div>\n        <div class="zero-row"><span id="hz-lora">Not zeroed</span><button id="zb-lora" disabled>Zero</button></div>\n        <div class="hint" id="hh-lora"></div>\n        <div class="foot"><span id="ha-lora">no data</span><a data-open="lora">Open LoRa radio tab</a></div>\n      </div>\n', 'espnow': '      <div class="card" id="card-espnow">\n        <h2><span class="swatch" style="background:#8E5CF6"></span>ESP-NOW <span class="state" id="hs-espnow"></span></h2>\n        <div class="big" id="hd-espnow">--<small>m</small></div>\n        <div class="method">Distance from the reference node (the other board), from signal strength</div>\n        <div class="detail" id="hx-espnow">--</div>\n        <div class="zero-row"><span id="hz-espnow">Not zeroed</span><button id="zb-espnow" disabled>Zero</button></div>\n        <div><label class="cal">RSSI at 1 m <input class="small" id="enRef" type="number" step="1" value="-45"></label>\n             <label class="cal">n <input class="small" id="enN" type="number" step="0.1" min="1" max="6" value="2.5"></label></div>\n        <div class="foot"><span id="ha-espnow">no data</span><a data-open="espnow">Open ESP-NOW tab</a></div>\n      </div>\n', 'imu': '      <div class="card" id="card-imu">\n        <h2><span class="swatch" style="background:#14A39A"></span>IMU <span class="state" id="hs-imu"></span></h2>\n        <div class="big" id="hd-imu">--<small>m</small></div>\n        <div class="method">Distance traveled since zero (acceleration integrated twice; drifts over long runs)</div>\n        <div class="detail" id="hx-imu">--</div>\n        <div class="zero-row"><span id="hz-imu">Not zeroed</span><button id="zb-imu" disabled>Zero</button></div>\n        <div class="hint" id="hh-imu"></div>\n        <div class="foot"><span id="ha-imu">no data</span><a data-open="imu">Open IMU tab</a></div>\n      </div>\n'}
+CARD_HTML = {'gps': '      <div class="card" id="card-gps">\n        <h2><span class="swatch" style="background:#2F80ED"></span>GPS <span class="state" id="hs-gps"></span></h2>\n        <div class="big" id="hd-gps">--<small>m</small></div>\n        <div class="method" id="hm-gps">Distance from the GPS origin (Zero all sets it here: 30 s average)</div>\n        <div class="detail" id="hx-gps">--</div>\n        <div class="zero-row"><span id="hz-gps">Not zeroed</span><button id="zb-gps" disabled>Zero</button></div>\n        <div class="hint" id="hh-gps"></div>\n        <div class="foot"><span id="ha-gps">no data</span><a data-open="gps">Open GPS tab</a></div>\n      </div>\n', 'lora': '      <div class="card" id="card-lora">\n        <h2><span class="swatch" style="background:#E07B39"></span>LoRa radio <span class="state" id="hs-lora"></span></h2>\n        <div class="big" id="hd-lora">--<small>m</small></div>\n        <div class="method">Distance from the reference node (the other board), from signal strength</div>\n        <div class="detail" id="hx-lora">--</div>\n        <div class="zero-row"><span id="hz-lora">Not zeroed</span><button id="zb-lora" disabled>Zero</button></div>\n        <div class="hint" id="hh-lora"></div>\n        <div class="foot"><span id="ha-lora">no data</span><a data-open="lora">Open LoRa radio tab</a></div>\n      </div>\n', 'espnow': '      <div class="card" id="card-espnow">\n        <h2><span class="swatch" style="background:#8E5CF6"></span>ESP-NOW <span class="state" id="hs-espnow"></span></h2>\n        <div class="big" id="hd-espnow">--<small>m</small></div>\n        <div class="method">Distance from the reference node (the other board), from signal strength</div>\n        <div class="detail" id="hx-espnow">--</div>\n        <div class="zero-row"><span id="hz-espnow">Not zeroed</span><button id="zb-espnow" disabled>Zero</button></div>\n        <div><label class="cal">RSSI at 1 m <input class="small" id="enRef" type="number" step="1" value="-45"></label>\n             <label class="cal">n <input class="small" id="enN" type="number" step="0.1" min="1" max="6" value="2.5"></label></div>\n        <div class="foot"><span id="ha-espnow">no data</span><a data-open="espnow">Open ESP-NOW tab</a></div>\n      </div>\n', 'imu': '      <div class="card" id="card-imu">\n        <h2><span class="swatch" style="background:#14A39A"></span>IMU <span class="state" id="hs-imu"></span></h2>\n        <div class="big" id="hd-imu">--<small>m</small></div>\n        <div class="method">Distance traveled since zero (acceleration integrated twice; drifts over long runs)</div>\n        <div class="detail" id="hx-imu">--</div>\n        <div class="zero-row"><span id="hz-imu">Not zeroed</span><button id="zb-imu" disabled>Zero</button></div>\n        <div class="hint" id="hh-imu"></div>\n        <div class="foot"><span id="ha-imu">no data</span><a data-open="imu">Open IMU tab</a></div>\n      </div>\n'}
 CARD_HTML["imu2"] = (CARD_HTML["imu"].replace('-imu"', '-imu2"').replace('data-open="imu"', 'data-open="imu2"')
                      .replace("#14A39A", "#D4A017").replace(">IMU <", ">IMU 2 (ISM330DHCX) <").replace("Open IMU tab", "Open IMU 2 tab"))
 CARD_HTML["imu"] = CARD_HTML["imu"].replace(">IMU <", ">IMU (ICM-20948) <")
