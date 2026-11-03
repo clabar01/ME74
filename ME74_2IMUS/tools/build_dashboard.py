@@ -244,6 +244,16 @@ PAGE = r"""<!doctype html>
           font-variant-numeric: tabular-nums; }
   .chip.done { border-color: var(--ok); color: var(--ok); }
   .chip.low { border-color: var(--bad); color: var(--bad); }
+  .incl { align-items: center; }
+  .incl .lbl { font-size: 14px; font-weight: 700; color: var(--muted); }
+  .incl-box { display: inline-flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 800; padding: 8px 14px;
+              border: 2px solid var(--line); border-radius: 10px; cursor: pointer; user-select: none; }
+  .incl-box:has(input:checked) { border-color: var(--accent); }
+  .incl-box:has(input:disabled) { opacity: .5; cursor: default; }
+  .incl input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
+  .incl .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; margin-left: 8px; }
+  #inclWarn { margin: 0; font-size: 16px; font-weight: 700; color: var(--warn); }
+  #inclWarn:empty { display: none; }
   .chip.skip { color: var(--muted); font-weight: 600; font-size: 15px; }
   #saveInfo { font-size: 14px; color: var(--muted); }
   .restore { display: none; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-radius: 10px;
@@ -292,6 +302,12 @@ PAGE = r"""<!doctype html>
         <div class="phase offline" id="phase"><span class="word" id="phaseWord">NOT CONNECTED</span>
           <span class="count" id="phaseCount"></span><span class="sub" id="phaseSub">Connect the board to start</span></div>
         <p id="testMsg"></p>
+        <div class="test-row incl">
+          <span class="lbl">Include in this test</span><span class="test-row" id="inclBoxes" style="gap:8px"></span>
+          <button class="mid" id="btnInclAll">All</button><button class="mid" id="btnInclNone">None</button>
+          <label class="toggle"><input type="checkbox" id="stopUnchecked"> Stop unchecked modules on the board</label>
+        </div>
+        <p id="inclWarn"></p>
         <div class="test-row">
           <label class="field">Tape distance (m)<input id="tape" type="number" step="0.01" min="0" placeholder="--" inputmode="decimal"></label>
           <label class="field">Step (m, blank = stay)<input id="testStep" class="narrow" type="number" step="0.01" placeholder="--" inputmode="decimal"></label>
@@ -783,7 +799,10 @@ for (const mod of Object.keys(CHILDREN)) {
     renderHome();
   };
 }
-$("btnZeroAll").onclick = () => startZero(Object.keys(CHILDREN));
+$("btnZeroAll").onclick = () => {
+  if (!included().length) { setMsg("Check at least one sensor under Include in this test", "bad"); return; }
+  startZero(included());   // GPS unchecked: no origin, just the short IMU / radio zero
+};
 
 // ---------- Messages ----------
 function setMsg(text, cls = "") {
@@ -881,8 +900,60 @@ function cancelZero() {
 
 // ---------- Test workflow: 30 new readings per sensor at each tape mark ----------
 const N_SAMPLES = 30, LOW_N = 10;
-const TEST_ORDER = ["gps", "lora", "espnow", "imu", "imu2"].filter(HAS);
-const TEST = { points: [], samples: [], stamp: null, slug: "" };
+// The results CSV always has columns for ALL_SENSORS, so MATLAB scripts work on any test
+const ALL_SENSORS = ["gps", "lora", "espnow", "imu", "imu2"];
+const TEST_ORDER = ALL_SENSORS.filter(HAS);
+const TEST = { points: [], samples: [], stamp: null, slug: "", tag: "" };
+
+// ---------- Which sensors are part of this test ----------
+const incl = Object.fromEntries(TEST_ORDER.map((m) => [m, true]));
+const included = () => TEST_ORDER.filter((m) => incl[m]);
+const sensorsText = (list) => list.join("+");
+const fileTag = (list) => (list.length === TEST_ORDER.length ? "all" : list.join("+"));
+$("inclBoxes").innerHTML = TEST_ORDER.map((m) =>
+  `<label class="incl-box"><input type="checkbox" data-mod="${m}" checked>${NAME(m)}</label>`).join("");
+const inclInputs = () => [...document.querySelectorAll("#inclBoxes input")];
+function syncInclBoxes() { for (const cb of inclInputs()) cb.checked = !!incl[cb.dataset.mod]; }
+for (const cb of inclInputs()) cb.onchange = () => { incl[cb.dataset.mod] = cb.checked; onInclChange(); };
+$("btnInclAll").onclick = () => { for (const m of TEST_ORDER) incl[m] = true; syncInclBoxes(); onInclChange(); };
+$("btnInclNone").onclick = () => { for (const m of TEST_ORDER) incl[m] = false; syncInclBoxes(); onInclChange(); };
+// The sensors point 1 used; rows only line up if every point uses the same ones
+function inclMismatch() {
+  const first = TEST.points[0];
+  if (!first || !first.included) return null;
+  const was = sensorsText(first.included), now = sensorsText(included());
+  return was === now ? null : was;
+}
+function onInclChange() {
+  const was = inclMismatch();
+  if (was) setMsg(`Sensors changed partway through this test`, "warn");
+  if ($("stopUnchecked").checked) applyRunMask();
+  if (TEST.points.length) persist();
+  renderHome();
+}
+
+// ---------- Optionally run only the checked modules on the board ----------
+function applyRunMask() {
+  if (!port) return;
+  for (const m of TEST_ORDER) {
+    const want = !!incl[m], st = modState[m];
+    if (!st || st.run !== want) runCmd((want ? "go " : "stop ") + m);
+  }
+}
+function restoreAllModules(why) {
+  const wasOn = $("stopUnchecked").checked;
+  $("stopUnchecked").checked = false;
+  if (wasOn && port) { runCmd("go"); if (why) setMsg(why); }
+}
+$("stopUnchecked").onchange = (e) => {
+  if (!port) { e.target.checked = false; setMsg("Connect the board first", "bad"); return; }
+  if (e.target.checked) {
+    applyRunMask();
+    setMsg("Only the checked modules run on the board now. A module that was just started needs a few seconds " +
+           "(an IMU recalibrates for ~4 s: keep it still), then press Zero all.", "warn");
+  } else { runCmd("go"); setMsg("All modules running again (Go all)"); }
+  renderHome();
+};
 let sampling = null;      // the point being sampled
 let lastRun = null;       // the last point (for the progress chips)
 let lastOutcome = null;   // {word, cls, sub} shown after a point until the next action
@@ -903,8 +974,10 @@ function takeSamples() {
   const tape = tapeVal();
   if (tape == null) { setMsg("Type the tape distance first", "bad"); $("tape").focus(); return; }
   const timeout = Math.max(5, num($("testTimeout").value) ?? 60);
+  const inc = included();
+  if (!inc.length) { setMsg("Check at least one sensor under Include in this test", "bad"); return; }
   const sensors = {}, skipped = [];
-  for (const m of TEST_ORDER) {
+  for (const m of inc) {
     const why = sampleReady(m);
     if (why) skipped.push([m, why]); else sensors[m] = { rows: [] };
   }
@@ -915,10 +988,11 @@ function takeSamples() {
     send("status");   // asks the firmware for its calibration (in case it was calibrated before connecting)
     if (!loraDev.calibrated) notes.push("LoRa not calibrated: RSSI is recorded, distance stays blank");
   }
-  if (!TEST.stamp) { TEST.stamp = fileStamp(new Date()); TEST.slug = runSlug(); }
+  const was = inclMismatch();
+  if (was) notes.push(`Sensors differ from point 1 (${was})`);
   lastOutcome = null;
-  sampling = { point: TEST.points.length + 1, tape, test: runName(), t0: performance.now(),
-               startIso: new Date().toISOString(), timeoutMs: timeout * 1000, sensors, skipped };
+  sampling = { point: TEST.points.length + 1, tape, test: runName(), t0: performance.now(), startDate: new Date(),
+               startIso: new Date().toISOString(), timeoutMs: timeout * 1000, sensors, skipped, included: inc };
   lastRun = sampling;
   setMsg(notes.join(" · "), notes.length ? "warn" : "");
   renderHome();
@@ -949,10 +1023,13 @@ function finishPoint() {
   const s = sampling;
   sampling = null;
   const tape = tapeVal() ?? s.tape;   // a typo fixed while sampling still counts
-  const p = { point: s.point, test: s.test, pc_time: s.startIso, tape, sensors: {} };
+  // File names are fixed by the first point, so autosave keeps writing the same two files
+  if (!TEST.stamp) { TEST.stamp = fileStamp(s.startDate); TEST.slug = runSlug(); TEST.tag = fileTag(s.included); }
+  const p = { point: s.point, test: s.test, pc_time: s.startIso, tape, sensors: {}, included: s.included };
   const short = [];
   for (const m of TEST_ORDER) {
     const b = s.sensors[m];
+    if (!s.included.includes(m)) { p.sensors[m] = { excluded: true }; continue; }
     if (!b) { p.sensors[m] = { n: 0, skipped: true }; continue; }
     const rows = b.rows, d = stats(rows.map((r) => r.dist));
     const e = { n: rows.length, timedOut: rows.length < N_SAMPLES, med: d.med, iqr: d.iqr,
@@ -1010,10 +1087,11 @@ function redoLast() {
 function newTest() {
   if (sampling || zeroRun || !TEST.points.length) return;
   if (!confirm("Start a new test? This clears the results table. Saved files are kept; download the CSVs first if they aren't saved.")) return;
-  Object.assign(TEST, { points: [], samples: [], stamp: null, slug: "" });
+  Object.assign(TEST, { points: [], samples: [], stamp: null, slug: "", tag: "" });
   lastRun = null; lastOutcome = null; tableDirty = true; saveErr = null; lastSaveAt = null;
   persist();
   setMsg("New test started");
+  restoreAllModules("New test started: all modules running again (Go all)");
   renderHome();
 }
 
@@ -1025,18 +1103,23 @@ function toCsv(cols, rows) {
 const RES_EXTRA = { gps: [["gps_hdop_median", "hdop", 2]], lora: [["lora_rssi_median_dbm", "rssi", 1], ["lora_snr_median_db", "snr", 2]],
                     espnow: [["espnow_rssi_median_dbm", "rssi", 2]] };
 function resultsCsv() {
+  // Same columns in every test. Sensor not in the test: all its cells blank (n too).
+  // Included but no data: n = 0. "sensors" (last column) lists what was included, e.g. lora+espnow.
   const cols = ["point", "test", "pc_time", "tape_m"];
-  for (const m of TEST_ORDER) {
+  for (const m of ALL_SENSORS) {
     cols.push(`${m}_n`, `${m}_median_m`, `${m}_iqr_m`, `${m}_error_m`, `${m}_timed_out`);
     for (const [c] of RES_EXTRA[m] || []) cols.push(c);
   }
+  cols.push("sensors");
   const rows = TEST.points.map((p) => {
     const r = [p.point, p.test, p.pc_time, fx(p.tape, 3)];
-    for (const m of TEST_ORDER) {
-      const e = p.sensors[m] || { n: 0, skipped: true };
-      r.push(e.n, fx(e.med, 3), fx(e.iqr, 3), fx(e.err, 3), e.skipped ? "" : e.timedOut ? 1 : 0);
-      for (const [, k, d] of RES_EXTRA[m] || []) r.push(fx(e[k], d));
+    for (const m of ALL_SENSORS) {
+      const e = p.sensors[m] || { excluded: true };
+      if (e.excluded) r.push("", "", "", "", "");
+      else r.push(e.n, fx(e.med, 3), fx(e.iqr, 3), fx(e.err, 3), e.skipped ? "" : e.timedOut ? 1 : 0);
+      for (const [, k, d] of RES_EXTRA[m] || []) r.push(e.excluded ? "" : fx(e[k], d));
     }
+    r.push(p.included ? sensorsText(p.included) : "");
     return r;
   });
   return toCsv(cols, rows);
@@ -1048,7 +1131,7 @@ function rawCsv() {
     fx(s.dist, 3), fx(s.smoothDist, 3), fx(s.rssiRaw, 2), fx(s.rssiSmooth, 2), fx(s.snr, 2), fx(s.hdop, 2), fx(s.sats, 0),
     fx(s.lat, 7), fx(s.lon, 7), fx(s.speed, 2), fx(s.fromZero, 3)]));
 }
-const testPart = () => (TEST.slug ? "_" + TEST.slug : "");
+const testPart = () => (TEST.slug ? "_" + TEST.slug : "") + (TEST.tag ? "_" + TEST.tag : "");
 const resultsName = () => `ME74_results${testPart()}_${TEST.stamp}.csv`;
 const rawName = () => `ME74_raw_samples${testPart()}_${TEST.stamp}.csv`;
 
@@ -1107,7 +1190,8 @@ function persist() {
   try {
     if (!TEST.points.length) localStorage.removeItem(BACKUP_KEY);
     else localStorage.setItem(BACKUP_KEY, JSON.stringify({ savedAt: new Date().toISOString(), test: TEST,
-      tape: $("tape").value, step: $("testStep").value, timeout: $("testTimeout").value, name: $("runLabel").value }));
+      tape: $("tape").value, step: $("testStep").value, timeout: $("testTimeout").value, name: $("runLabel").value,
+      incl: { ...incl } }));
     backupErr = null;
   } catch (e) { backupErr = e.message || String(e); }
 }
@@ -1125,6 +1209,7 @@ $("btnRestore").onclick = () => {
   Object.assign(TEST, b.test);
   $("tape").value = b.tape ?? ""; $("testStep").value = b.step ?? ""; $("testTimeout").value = b.timeout || 60;
   if (!$("runLabel").value) $("runLabel").value = b.name || "";
+  if (b.incl) { for (const m of TEST_ORDER) if (m in b.incl) incl[m] = !!b.incl[m]; syncInclBoxes(); }
   restorePending = null; $("restoreBar").classList.remove("show");
   tableDirty = true;
   setMsg(`Restored ${TEST.points.length} points. Choose the save folder again, or download the CSVs.`, "warn");
@@ -1173,9 +1258,16 @@ function renderTest() {
   $("btnFolder").textContent = saveDir ? "Change save folder" : "Choose save folder";
   $("saveInfo").textContent = saveInfoText();
   $("saveInfo").style.color = saveErr || backupErr ? "var(--bad)" : "";
+  // Sensor choice is locked while zeroing or sampling
+  for (const cb of inclInputs()) cb.disabled = busy;
+  $("btnInclAll").disabled = $("btnInclNone").disabled = busy;
+  $("stopUnchecked").disabled = busy || !port;
+  const was = inclMismatch();
+  $("inclWarn").textContent = !was ? "" : `Warning: this test started with ${was}, now ${sensorsText(included()) || "nothing"} ` +
+    `is checked. New rows won't match the earlier ones; press New test for a clean file.`;
 
   const r = sampling || lastRun;
-  $("chips").innerHTML = !r ? "" : TEST_ORDER.map((m) => {
+  $("chips").innerHTML = !r ? "" : TEST_ORDER.filter((m) => !r.included || r.included.includes(m)).map((m) => {
     const b = r.sensors[m];
     if (!b) { const why = (r.skipped.find((x) => x[0] === m) || [])[1] || "skipped"; return `<span class="chip skip">${NAME(m)}: ${why}</span>`; }
     const n = b.rows.length, c = n >= N_SAMPLES ? "done" : r !== sampling && n < LOW_N ? "low" : "";
@@ -1192,7 +1284,8 @@ function renderTable() {
   for (const p of [...TEST.points].reverse()) {     // newest first
     h += `<tr><td><span class="med">${p.point}</span></td><td><span class="med">${p.tape.toFixed(2)}</span></td>`;
     for (const m of TEST_ORDER) {
-      const e = p.sensors[m] || { n: 0, skipped: true };
+      const e = p.sensors[m] || { excluded: true };
+      if (e.excluded) { h += `<td><span class="med">--</span><span class="sm">not included</span></td>`; continue; }
       if (e.skipped) { h += `<td><span class="med">--</span><span class="sm">skipped</span></td>`; continue; }
       const low = e.n < LOW_N ? " lown" : "";
       const med = e.med == null ? "--" : e.med.toFixed(2);
@@ -1395,6 +1488,10 @@ async function connect() {
 async function disconnect(reason) {
   if (sampling) { sampling = null; setMsg("Board disconnected: the point was cancelled, nothing recorded", "bad"); }
   if (zeroRun) { zeroRun = null; gpsOrigin.pending = false; setMsg("Board disconnected: zeroing cancelled", "bad"); }
+  if ($("stopUnchecked").checked) {
+    $("stopUnchecked").checked = false;
+    setMsg("Board disconnected: modules stopped on the board stay stopped until you reconnect and press Go all (or reset the board)", "warn");
+  }
   for (const f of Object.values(frames)) f.contentWindow.postMessage({ me74: 1, kind: "disconnect" }, "*");
   try { if (reader) await reader.cancel(); } catch (e) {}
   try { if (pipeDone) await pipeDone; } catch (e) {}
