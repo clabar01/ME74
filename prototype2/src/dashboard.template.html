@@ -1,0 +1,1621 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ME74 Prototype 2: Drone Positioning</title>
+<!--
+  ME74 Prototype 2 dashboard. Open in Chrome or Edge (needs Web Serial).
+
+  1. Set the nodes: stand at each stationary node and press its "Set node" button.
+     It uses the laptop's location right away, then averages the GPS board (if one is
+     plugged in) for a better fix. You can also drag a node on the satellite map.
+  2. Connect the receiver board (the one plugged into the laptop).
+  3. Start a trial. Drone positions are worked out from the radio signal strength
+     between each drone and the nodes, and drawn on the map.
+
+  Serial lines it understands (115200 baud, an optional "[TAG] " prefix is ignored):
+    RSSI,<node id>,<drone id>,<rssi dBm>[,<snr>[,<seq>]]   node heard drone (or another node)
+    GPS,<drone or source id>,<lat>,<lon>[,<alt m>[,<sats>[,<hdop>]]]
+    ALT,<drone id>,<height above takeoff m>
+    IMU,<drone id>,ax,ay,az,gx,gy,gz          logged only
+    {"type":"status","state":"fix","lat":..,"lon":..,...}   existing ME74 GPS firmware
+-->
+<style>/*LEAFLET_CSS*/</style>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #F4F5F7; --card: #FFFFFF; --text: #1B1F24; --muted: #667085; --line: #E2E5EA; --grid: #EEF0F3;
+    --accent: #2563EB; --accent-text: #FFFFFF; --ok: #15803D; --warn: #B45309; --bad: #DC2626;
+    --ok-bg: #E8F5EC; --warn-bg: #FDF3E7; --bad-bg: #FDECEC;
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+    --zone: 124, 58, 237; --console: #0F1115; --console-text: #D6DAE1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #0B0D11; --card: #15181E; --text: #E6E8EB; --muted: #9AA4B2; --line: #272C36; --grid: #1D2129;
+      --accent: #4F8CFF; --accent-text: #0B0D12; --ok: #3FB950; --warn: #E3A008; --bad: #F05252;
+      --ok-bg: #12261A; --warn-bg: #2A2110; --bad-bg: #2C1414;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300;
+      --console: #07090C; --console-text: #C9CED6;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text); display: flex; flex-direction: column;
+         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  button { font: inherit; font-weight: 600; padding: 7px 14px; border-radius: 9px; cursor: pointer;
+           border: 1px solid var(--line); background: var(--card); color: var(--text); white-space: nowrap; }
+  button:hover:not(:disabled) { filter: brightness(0.97); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.go { background: var(--ok); border-color: var(--ok); color: #fff; }
+  button.stop { background: var(--bad); border-color: var(--bad); color: #fff; }
+  button.small { padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+  button.link { border: 0; background: none; color: var(--accent); padding: 2px 4px; }
+  button:disabled { opacity: .45; cursor: default; }
+  input, select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line);
+                  background: var(--bg); color: var(--text); width: 100%; min-width: 0; }
+  input[type=checkbox] { width: auto; }
+  label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); font-weight: 600; }
+  label.row { flex-direction: row; align-items: center; gap: 6px; }
+
+  /* ---------- header + steps ---------- */
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 16px;
+           background: var(--card); border-bottom: 1px solid var(--line); }
+  .brand b { display: block; font-size: 16px; }
+  .brand span { color: var(--muted); font-size: 12px; }
+  .steps { display: flex; gap: 6px; margin-left: 8px; flex-wrap: wrap; }
+  .step { display: flex; align-items: center; gap: 8px; padding: 5px 12px 5px 6px; border-radius: 999px;
+          border: 1px solid var(--line); background: var(--bg); }
+  .step .num { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700;
+               background: var(--line); color: var(--muted); flex: none; }
+  .step b { font-size: 13px; display: block; line-height: 1.2; }
+  .step small { color: var(--muted); font-size: 11px; display: block; line-height: 1.2; }
+  .step.done .num { background: var(--ok); color: #fff; }
+  .step.now { border-color: var(--accent); }
+  .step.now .num { background: var(--accent); color: var(--accent-text); }
+  .spacer { flex: 1; }
+  #hintBar { padding: 8px 16px; font-weight: 600; background: var(--card); border-bottom: 1px solid var(--line); }
+  #hintBar.ok { color: var(--ok); } #hintBar.warn { color: var(--warn); } #hintBar.bad { color: var(--bad); }
+  #hintBar .k { color: var(--muted); font-weight: 600; margin-right: 6px; }
+
+  /* ---------- main layout ---------- */
+  .app { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 410px; }
+  #mapPane { position: relative; min-height: 0; }
+  #map { position: absolute; inset: 0; background: #2b2f36; }
+  aside { border-left: 1px solid var(--line); background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
+  @media (max-width: 1000px) {
+    body { height: auto; } .app { grid-template-columns: 1fr; }
+    #mapPane { height: 62vh; } aside { border-left: 0; }
+  }
+  nav.tabs { display: flex; background: var(--card); border-bottom: 1px solid var(--line); padding: 0 6px; }
+  nav.tabs button { flex: 1; border: 0; border-radius: 0; background: none; padding: 10px 4px; color: var(--muted);
+                    border-bottom: 3px solid transparent; }
+  nav.tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tabpage { display: none; overflow-y: auto; padding: 12px; flex: 1; min-height: 0; }
+  .tabpage.active { display: flex; flex-direction: column; gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+  .card h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+             display: flex; align-items: center; gap: 8px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+  .sw { display: inline-block; width: 12px; height: 12px; flex: none; }
+  .sw.sq { border-radius: 3px; } .sw.dot { border-radius: 50%; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* node + drone cards */
+  .node { display: flex; flex-direction: column; gap: 6px; }
+  .nodeTop { display: flex; align-items: center; gap: 10px; }
+  .badge { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; color: #fff; font-weight: 800;
+           flex: none; background: var(--c); }
+  .badge.round { border-radius: 50%; }
+  .nodeTop .title { flex: 1; min-width: 0; }
+  .nodeTop .title b { display: block; font-size: 15px; }
+  .nodeTop .title span { color: var(--muted); font-size: 12px; }
+  .chip { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+  .chip.none { background: var(--grid); color: var(--muted); }
+  .chip.good { background: var(--ok-bg); color: var(--ok); }
+  .chip.ok { background: var(--grid); color: var(--text); }
+  .chip.rough { background: var(--warn-bg); color: var(--warn); }
+  .chip.bad { background: var(--bad-bg); color: var(--bad); }
+  .chip.good::before { content: "\2713  "; } .chip.rough::before, .chip.bad::before { content: "\26A0\FE0E  "; }
+  .coord { font: 13px ui-monospace, Menlo, monospace; color: var(--text); }
+  .coord.unset { color: var(--muted); font-family: inherit; }
+  .setBtn { flex: 1; padding: 9px 12px; }
+  .msg { font-size: 12px; color: var(--muted); min-height: 0; }
+  .msg.warn { color: var(--warn); }
+  .prog { height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; }
+  .prog > div { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+  details.more { font-size: 13px; }
+  details.more summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 12px; list-style: none; }
+  details.more summary::-webkit-details-marker { display: none; }
+  details.more[open] summary { margin-bottom: 8px; }
+  .addRow { display: flex; gap: 8px; align-items: center; }
+
+  .live { display: flex; flex-direction: column; gap: 6px; }
+  .live .big { font: 600 18px ui-monospace, Menlo, monospace; }
+  .live .sub { color: var(--muted); font-size: 13px; }
+  .sig { display: grid; grid-template-columns: auto auto 1fr auto; gap: 4px 10px; align-items: center; font-size: 13px; margin-top: 4px; }
+  .bars { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; }
+  .bars i { width: 4px; background: var(--line); border-radius: 1px; }
+  .bars i.on { background: var(--text); }
+  .stat { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 2px; }
+  .stat div { font-size: 12px; color: var(--muted); }
+  .stat div b { display: block; font-size: 18px; color: var(--text); }
+  .flags { margin: 4px 0 0; padding: 0; list-style: none; font-size: 12px; }
+  .flags li { color: var(--warn); }
+  .flags li::before { content: "\26A0\FE0E  "; }
+  .state { font-size: 12px; font-weight: 700; }
+  .state.on { color: var(--ok); } .state.off { color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .chartWrap { position: relative; }
+  .chartWrap canvas { display: block; width: 100%; height: 210px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); align-items: center; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .tip { position: absolute; pointer-events: none; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+         padding: 6px 8px; font-size: 12px; display: none; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.15); z-index: 3; }
+  #console { background: var(--console); color: var(--console-text); font: 12px/1.45 ui-monospace, Menlo, monospace;
+             height: 200px; overflow-y: auto; border-radius: 8px; padding: 8px; white-space: pre-wrap; }
+  pre.fmt { font: 12px/1.45 ui-monospace, Menlo, monospace; background: var(--bg); padding: 8px; border-radius: 8px; white-space: pre-wrap; margin: 6px 0; }
+
+  /* ---------- map overlays ---------- */
+  .mapBar { position: absolute; top: 10px; right: 10px; z-index: 500; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%; }
+  .mapBar button { box-shadow: 0 1px 4px rgba(0,0,0,.25); padding: 6px 11px; font-size: 13px; }
+  .mapBar button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .seg { display: inline-flex; border-radius: 9px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+  .seg button { border-radius: 0; box-shadow: none; border: 0; }
+  .mapLegend { position: absolute; left: 10px; bottom: 26px; z-index: 500; background: var(--card); border: 1px solid var(--line);
+               border-radius: 10px; padding: 8px 10px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.25); max-width: 60%; }
+  .mapLegend .legend { color: var(--text); }
+  .mapMsg { position: absolute; left: 50%; top: 58px; transform: translateX(-50%); z-index: 500; background: var(--card);
+            border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px; font-size: 13px; font-weight: 600;
+            box-shadow: 0 1px 4px rgba(0,0,0,.25); display: none; max-width: 50%; text-align: center; }
+  .nodeMk { width: 26px; height: 26px; border-radius: 6px; background: var(--c); border: 2px solid #fff; color: #fff;
+            display: grid; place-items: center; font: 800 13px -apple-system, sans-serif; box-shadow: 0 1px 5px rgba(0,0,0,.5); }
+  .nodeMk.drag { cursor: move; }
+  .droneMk { position: relative; width: 18px; height: 18px; }
+  .droneMk i { position: absolute; inset: 0; border-radius: 50%; background: var(--c); border: 2.5px solid #fff; box-shadow: 0 1px 5px rgba(0,0,0,.5); }
+  .droneMk i.stale { opacity: .4; }
+  .droneMk b { position: absolute; left: 24px; top: -2px; white-space: nowrap; font: 700 12px -apple-system, sans-serif;
+               background: rgba(15,17,21,.82); color: #fff; padding: 2px 7px; border-radius: 6px; }
+  .leaflet-container { font: inherit; }
+  .leaflet-control-attribution { font-size: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>ME74 Prototype 2</b><span>Drone positions from radio signal strength</span></div>
+  <div class="steps">
+    <div class="step" id="step1"><span class="num">1</span><div><b>Set the nodes</b><small id="step1t"></small></div></div>
+    <div class="step" id="step2"><span class="num">2</span><div><b>Connect receiver</b><small id="step2t"></small></div></div>
+    <div class="step" id="step3"><span class="num">3</span><div><b>Fly a trial</b><small id="step3t"></small></div></div>
+  </div>
+  <span class="spacer"></span>
+  <button id="connectBtn" class="primary">Connect receiver</button>
+  <button id="trialBtn" class="go">Start trial</button>
+  <button id="saveBtn" title="Downloads one ZIP with every CSV and the setup">Save data</button>
+  <button id="simBtn" title="Fake drones so you can try the dashboard without hardware">Demo</button>
+</header>
+<div id="hintBar"></div>
+
+<div class="app">
+  <div id="mapPane">
+    <div id="map"></div>
+    <div class="mapBar">
+      <span class="seg"><button id="lySat" class="on">Satellite</button><button id="lyStreet">Streets</button></span>
+      <button id="followBtn" class="on" title="Keep the nodes and drones in view">Follow</button>
+      <button id="fitBtn">Fit</button>
+      <button id="circlesBtn" title="Distance from each node to each drone">Range circles</button>
+      <button id="zonesBtn" title="Where the radio fix should be most accurate">Best zones</button>
+    </div>
+    <div class="mapMsg" id="mapMsg"></div>
+    <div class="mapLegend" id="mapLegend"></div>
+  </div>
+
+  <aside>
+    <nav class="tabs" id="tabs">
+      <button data-tab="setup" class="active">Setup</button>
+      <button data-tab="live">Live</button>
+      <button data-tab="results">Results</button>
+      <button data-tab="cal">Calibrate</button>
+      <button data-tab="more">More</button>
+    </nav>
+
+    <!-- SETUP -->
+    <div class="tabpage active" id="tab-setup">
+      <div class="card">
+        <h3>Stationary nodes</h3>
+        <div id="nodeList" style="display:flex;flex-direction:column;gap:14px"></div>
+        <div class="addRow" style="margin-top:12px">
+          <button id="addNode" class="small">+ Add node</button>
+          <span class="hint" id="nodeHint" style="margin:0"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Drones</h3>
+        <div id="droneList" style="display:flex;flex-direction:column;gap:14px"></div>
+      </div>
+    </div>
+
+    <!-- LIVE -->
+    <div class="tabpage" id="tab-live">
+      <div class="card">
+        <h3>Trial</h3>
+        <div class="g2">
+          <label>Name for this trial<input id="trialName"></label>
+          <div><div class="hint" style="margin:18px 0 0" id="trialInfo"></div></div>
+        </div>
+      </div>
+      <div id="liveCards" style="display:flex;flex-direction:column;gap:12px"></div>
+    </div>
+
+    <!-- RESULTS -->
+    <div class="tabpage" id="tab-results">
+      <div class="card">
+        <h3>Error vs GPS by trial</h3>
+        <div id="statsTable"></div>
+        <p class="hint">Error is the distance between the radio position and the GPS position at the same moment. It only
+          shows up for a drone that sends both.</p>
+      </div>
+      <div class="card">
+        <h3>Error over the last 5 minutes</h3>
+        <div class="legend" id="errLegend"></div>
+        <div class="chartWrap"><canvas id="errChart"></canvas><div class="tip" id="errTip"></div></div>
+      </div>
+      <div class="card">
+        <h3>Signal vs true distance</h3>
+        <div class="legend" id="plLegend"></div>
+        <div class="chartWrap"><canvas id="plChart"></canvas><div class="tip" id="plTip"></div></div>
+        <p class="hint">Dots are packets that arrived with a GPS fix, rings are calibration points, lines are the current
+          model for each node. If the dots don't follow the lines, recalibrate.</p>
+      </div>
+    </div>
+
+    <!-- CALIBRATE -->
+    <div class="tabpage" id="tab-cal">
+      <div class="card">
+        <h3>Why calibrate</h3>
+        <p class="hint" style="margin:0">The dashboard turns signal strength into distance with two numbers per node: the
+          signal at 1 m and how fast it fades (n). Every site is different, so measure them where you fly.</p>
+      </div>
+      <div class="card">
+        <h3>Option 1: tape measure</h3>
+        <p class="hint" style="margin:0 0 8px">Hold the drone payload at a measured distance from a node, then press Collect.
+          Do at least two distances (for example 2, 5, 10 and 20 m).</p>
+        <div class="g2">
+          <label>Node<select id="calAnchor"></select></label>
+          <label>Drone<select id="calDrone"></select></label>
+          <label>Distance (m, antenna to antenna)<input id="calDist" type="number" step="0.01" min="0.1" placeholder="5.00"></label>
+          <div class="btns" style="margin-top:18px"><button id="calGo" class="small primary">Collect 20</button><button id="calCancel" class="small" disabled>Cancel</button></div>
+        </div>
+        <div class="prog" style="margin-top:8px"><div id="calBar"></div></div>
+        <div id="calText" class="hint"></div>
+        <div id="calTable" style="margin-top:8px"></div>
+        <div class="btns"><button id="fitPts" class="small">Fit from these points</button>
+          <button id="calLink" class="small" title="Uses the nodes' signal from each other at their known distance">Add node-to-node point</button></div>
+      </div>
+      <div class="card">
+        <h3>Option 2: from a GPS flight</h3>
+        <p class="hint" style="margin:0 0 8px">Fly a drone that sends both radio and GPS around the nodes at a mix of distances,
+          then fit. Every packet with a fresh GPS fix is used.</p>
+        <button id="fitGps" class="small">Fit from GPS flight data</button>
+      </div>
+      <div class="card" id="fitCard" style="display:none">
+        <h3>Fit result</h3>
+        <div id="fitOut"></div>
+      </div>
+    </div>
+
+    <!-- MORE -->
+    <div class="tabpage" id="tab-more">
+      <div class="card">
+        <h3>General</h3>
+        <div class="g2">
+          <label>Units<select id="units"><option value="m">Meters</option><option value="ft">Feet</option></select></label>
+          <label>Baud rate<select id="baud"><option>115200</option><option>230400</option><option>921600</option><option>57600</option><option>9600</option></select></label>
+          <label>"Set node" GPS averaging (s)<input data-s="surveySecs" type="number" min="5" step="5"></label>
+          <label>"Set node" GPS source<select id="svSrc"><option value="auto">Automatic (not a drone)</option></select></label>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Math settings</h3>
+        <div class="g2">
+          <label>Signal noise (dB, 1&sigma;)<input data-s="sigmaDb" type="number" step="0.5" min="0.5"></label>
+          <label>Median of last N packets<input data-s="winN" type="number" step="1" min="1"></label>
+          <label>Ignore packets older than (s)<input data-s="winSec" type="number" step="0.5" min="0.2"></label>
+          <label>Smoothing: accel noise (m/s&sup2;)<input data-s="accelSigma" type="number" step="0.1" min="0.05"></label>
+        </div>
+        <div class="btns"><label class="row"><input data-s="kalman" type="checkbox"> Smooth the track (Kalman filter)</label></div>
+        <details class="more" style="margin-top:8px"><summary>How the math works</summary>
+          <p class="hint"><b>1.</b> Node positions are turned into east/north meters around the first node.</p>
+          <p class="hint"><b>2.</b> Distance from signal: d = 10^((RSSI@1m &minus; RSSI) / (10&middot;n)), using the median of the last N packets.</p>
+          <p class="hint"><b>3.</b> That distance is a slant line up to the drone, so the flight height is used to get the distance along the ground.</p>
+          <p class="hint"><b>4.</b> Two nodes: the two distance circles cross at two points, one on each side of the line between the nodes.
+            The drone's "side" setting picks one, then it follows the track. Three or more nodes: a least-squares fit with no mirror problem.</p>
+          <p class="hint"><b>5.</b> The accuracy circle comes from how the circles cross (bad when the drone is near the node line) and the signal noise.
+            A Kalman filter smooths the track, then the result is turned back into latitude and longitude.</p>
+        </details>
+      </div>
+      <div class="card">
+        <h3>Data</h3>
+        <div id="dataInfo" class="hint" style="margin:0 0 6px"></div>
+        <div class="btns">
+          <button id="saveFix" class="small">Fixes CSV</button>
+          <button id="saveRaw" class="small">Raw log CSV</button>
+          <button id="savePl" class="small">Signal vs GPS CSV</button>
+        </div>
+        <div class="btns">
+          <button id="saveSetup" class="small">Export setup</button>
+          <button id="loadSetup" class="small">Import setup</button>
+          <input id="setupFile" type="file" accept=".json,application/json" style="display:none">
+          <button id="clearData" class="small" style="color:var(--bad)">Clear data</button>
+        </div>
+        <p class="hint">Node positions, drone settings and calibration stay saved in this browser.</p>
+      </div>
+      <div class="card">
+        <h3>Console <span class="spacer"></span><label class="row" style="text-transform:none;letter-spacing:0"><input id="showData" type="checkbox"> Show data lines</label></h3>
+        <div id="console"></div>
+        <div class="btns" style="flex-wrap:nowrap"><input id="cmdIn" placeholder="Send a command to the board"><button id="cmdSend" class="small">Send</button></div>
+      </div>
+      <div class="card">
+        <h3>What the receiver board must print</h3>
+<pre class="fmt">RSSI,A,D1,-67        node A heard drone D1 at -67 dBm
+RSSI,A,B,-58         node A heard node B
+GPS,D1,42.4075120,-71.1190400,21.4,9,0.9
+ALT,D1,8.2           drone height above takeoff (m)</pre>
+        <p class="hint">The existing ME74 GPS firmware's JSON lines also work for "Set node".</p>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>/*LEAFLET_JS*/</script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const D2R = Math.PI / 180, R2D = 180 / Math.PI, FT = 0.3048;
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = (v, d = 1) => (v == null || !Number.isFinite(v)) ? '--' : v.toFixed(d);
+const median = (a) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+const gauss = () => { let u = 0; while (!u) u = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random()); };
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const MAX_ANCHORS = 4;
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const anchorColor = (i) => `var(--s${3 + i})`;
+const droneColor = (i) => `var(--s${1 + i})`;
+const colorOf = (v) => v.startsWith('var(') ? cssVar(v.slice(4, -1)) : v;
+
+// =====================================================================
+// Config (saved in this browser)
+// =====================================================================
+const DEFAULT_CFG = {
+  units: 'm',
+  anchors: [
+    { id: 'A', lat: null, lon: null, elev: 0, antH: 0.91, A: -45, n: 2.0, src: 'none', acc: null },
+    { id: 'B', lat: null, lon: null, elev: 0, antH: 0.91, A: -45, n: 2.0, src: 'none', acc: null },
+  ],
+  drones: [
+    { id: 'D1', name: 'Typhoon G', altMode: 'fixed', alt: 10, side: 'auto+' },
+    { id: 'D2', name: 'Contixo F28', altMode: 'fixed', alt: 10, side: 'auto+' },
+  ],
+  sigmaDb: 4, winN: 5, winSec: 3, kalman: true, accelSigma: 1.5, simNoise: 4,
+  surveySecs: 30, circles: false, zones: false, layer: 'sat', trialCount: 0,
+};
+function mergeCfg(o) {
+  const c = clone(DEFAULT_CFG);
+  if (o && typeof o === 'object') Object.assign(c, o);
+  if (!Array.isArray(c.anchors) || c.anchors.length < 2) c.anchors = clone(DEFAULT_CFG.anchors);
+  c.anchors = c.anchors.slice(0, MAX_ANCHORS).map((a, i) => ({ ...clone(DEFAULT_CFG.anchors[Math.min(i, 1)]), id: String.fromCharCode(65 + i), ...a }));
+  for (const a of c.anchors) if (!a.src) a.src = Number.isFinite(a.lat) ? 'typed' : 'none';
+  if (!Array.isArray(c.drones) || c.drones.length !== 2) c.drones = clone(DEFAULT_CFG.drones);
+  c.drones = c.drones.map((d, i) => ({ ...clone(DEFAULT_CFG.drones[i]), ...d }));
+  return c;
+}
+function loadCfg() {
+  try {
+    const s = localStorage.getItem('me74_p2_cfg_v2'); if (s) return mergeCfg(JSON.parse(s));
+    const old = localStorage.getItem('me74_p2_cfg');   // carry over node positions from the first version
+    if (old) { const o = JSON.parse(old); return mergeCfg({ anchors: o.anchors, sigmaDb: o.sigmaDb, winN: o.winN, winSec: o.winSec }); }
+  } catch (e) {}
+  return clone(DEFAULT_CFG);
+}
+function saveCfg() { try { localStorage.setItem('me74_p2_cfg_v2', JSON.stringify(cfg)); } catch (e) {} }
+let cfg = loadCfg();
+const isSet = (a) => Number.isFinite(a.lat) && Number.isFinite(a.lon);
+const droneName = (dc) => dc.name || dc.id;
+// Lengths in the chosen unit
+const uk = () => (cfg.units === 'ft' ? 1 / FT : 1);
+const us = () => (cfg.units === 'ft' ? 'ft' : 'm');
+const fL = (m, d = 1) => (m == null || !Number.isFinite(m)) ? '--' : `${(m * uk()).toFixed(d)} ${us()}`;
+const toDisp = (m) => (m == null || !Number.isFinite(m)) ? '' : +(m * uk()).toFixed(2);
+const fromDisp = (v) => v / uk();
+
+// =====================================================================
+// Geodesy: WGS84 lat/lon/h <-> ECEF <-> local east/north/up around node 1
+// =====================================================================
+const WA = 6378137, WF = 1 / 298.257223563, WE2 = WF * (2 - WF);
+function geo2ecef(lat, lon, h) {
+  const p = lat * D2R, l = lon * D2R, s = Math.sin(p), c = Math.cos(p), N = WA / Math.sqrt(1 - WE2 * s * s);
+  return [(N + h) * c * Math.cos(l), (N + h) * c * Math.sin(l), (N * (1 - WE2) + h) * s];
+}
+function ecef2geo(x, y, z) {
+  const lon = Math.atan2(y, x), p = Math.hypot(x, y);
+  let lat = Math.atan2(z, p * (1 - WE2)), h = 0;
+  for (let i = 0; i < 8; i++) { const s = Math.sin(lat), N = WA / Math.sqrt(1 - WE2 * s * s); h = p / Math.cos(lat) - N; lat = Math.atan2(z, p * (1 - WE2 * N / (N + h))); }
+  return [lat * R2D, lon * R2D, h];
+}
+let REF = null;
+function makeRef(lat, lon, h) { const p = lat * D2R, l = lon * D2R; return { lat, lon, h, o: geo2ecef(lat, lon, h), sp: Math.sin(p), cp: Math.cos(p), sl: Math.sin(l), cl: Math.cos(l) }; }
+function toENU(lat, lon, h) {
+  const r = REF, q = geo2ecef(lat, lon, h), dx = q[0] - r.o[0], dy = q[1] - r.o[1], dz = q[2] - r.o[2];
+  return [-r.sl * dx + r.cl * dy, -r.sp * r.cl * dx - r.sp * r.sl * dy + r.cp * dz, r.cp * r.cl * dx + r.cp * r.sl * dy + r.sp * dz];
+}
+function fromENU(e, n, u) {
+  const r = REF;
+  const dx = -r.sl * e - r.sp * r.cl * n + r.cp * r.cl * u, dy = r.cl * e - r.sp * r.sl * n + r.cp * r.sl * u, dz = r.cp * n + r.sp * u;
+  return ecef2geo(r.o[0] + dx, r.o[1] + dy, r.o[2] + dz);
+}
+
+// =====================================================================
+// Node geometry
+// =====================================================================
+let GA = [], BASE = null, refKey = '';
+const compass = (b) => ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'][Math.round(b / 45) % 8];
+function rebuildGeometry() {
+  const valid = cfg.anchors.map((a, i) => ({ ...a, idx: i })).filter(isSet);
+  if (!valid.length) { REF = null; GA = []; BASE = null; refKey = ''; return; }
+  const a0 = valid[0], key = [a0.lat, a0.lon, a0.elev].join(',');
+  REF = makeRef(a0.lat, a0.lon, a0.elev || 0);
+  if (key !== refKey) { if (refKey) resetTracks(); refKey = key; }
+  GA = valid.map((a) => ({ ...a, p: toENU(a.lat, a.lon, (a.elev || 0) + (a.antH || 0)) }));
+  BASE = null;
+  if (GA.length >= 2) {
+    const a = GA[0].p, b = GA[1].p, dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
+    if (L > 0.01) {
+      const ux = [dx / L, dy / L], uy = [-ux[1], ux[0]], nb = (Math.atan2(uy[0], uy[1]) * R2D + 360) % 360;
+      BASE = { L, ux, uy, plusName: compass(nb), minusName: compass((nb + 180) % 360), a: GA[0].id, b: GA[1].id };
+    }
+  }
+}
+// median of k packets: noise shrinks by about 1.25/sqrt(k)
+const rangeFromRssi = (rssi, a) => Math.pow(10, (a.A - rssi) / (10 * a.n));
+const rangeSigma = (d, a, k = 1) => d * Math.LN10 * cfg.sigmaDb * (k > 1 ? 1.25 / Math.sqrt(k) : 1) / (10 * a.n);
+
+// =====================================================================
+// Drone state
+// =====================================================================
+const DS = {};
+function dstate(id) {
+  if (!DS[id]) DS[id] = { rssi: {}, kf: null, est: null, fix: null, meas: [], track: [], gps: null, gpsTrack: [],
+                          altMsg: null, errs: [], flags: [], lastPkt: 0, imuCount: 0, pending: false };
+  return DS[id];
+}
+const droneIdx = (id) => cfg.drones.findIndex((d) => d.id === id);
+function resetTracks() { for (const d of Object.values(DS)) { d.kf = null; d.est = null; d.fix = null; d.track = []; d.gpsTrack = []; d.errs = []; d.gps = null; } }
+function droneU(dc, d) {
+  const now = Date.now();
+  if (dc.altMode === 'gps') {
+    if (d.gps && d.gps.p && d.gps.alt != null && now - d.gps.t < 5000) return { u: d.gps.p[2], src: 'GPS altitude' };
+    return { u: dc.alt, src: 'set height', fallback: true };
+  }
+  if (dc.altMode === 'msg') {
+    if (d.altMsg && now - d.altMsg.t < 5000) return { u: d.altMsg.v, src: 'ALT messages' };
+    return { u: dc.alt, src: 'set height', fallback: true };
+  }
+  return { u: dc.alt, src: 'set height' };
+}
+
+// =====================================================================
+// Position solvers
+// =====================================================================
+const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
+function solve2(ms, side, pred, flags) {
+  const A = ms[0], B = ms[1], pa = A.a.p, pb = B.a.p;
+  const dx = pb[0] - pa[0], dy = pb[1] - pa[1], L = Math.hypot(dx, dy);
+  if (L < 0.5) { flags.push('The two nodes are less than 0.5 m apart'); return null; }
+  const ux = [dx / L, dy / L], uy = [-ux[1], ux[0]], rA = A.rh, rB = B.rh;
+  const x = (rA * rA - rB * rB + L * L) / (2 * L), h2 = rA * rA - x * x, ok = h2 >= 0, h = ok ? Math.sqrt(h2) : 0;
+  if (!ok) flags.push("Distance circles don't cross, using the closest point on the node line");
+  const bx = pa[0] + x * ux[0], by = pa[1] + x * ux[1];
+  const c1 = [bx + h * uy[0], by + h * uy[1]], c2 = [bx - h * uy[0], by - h * uy[1]];
+  const nrm = BASE ? BASE.uy : uy, s = (c) => (c[0] - pa[0]) * nrm[0] + (c[1] - pa[1]) * nrm[1];
+  const plus = s(c1) >= s(c2) ? c1 : c2, minus = plus === c1 ? c2 : c1;
+  let pick;
+  if (side === '+') pick = plus;
+  else if (side === '-') pick = minus;
+  else if (pred) pick = dist2(plus, pred) <= dist2(minus, pred) ? plus : minus;
+  else { pick = side === 'auto-' ? minus : plus; flags.push(`No track yet, assuming the ${BASE ? (side === 'auto-' ? BASE.minusName : BASE.plusName) : ''} side of the node line`); }
+  if (ok && h < 2) flags.push('Close to the line between the nodes, the side could flip');
+  return { x: pick[0], y: pick[1], alt: pick === plus ? minus : plus, ok, side: pick === plus ? '+' : '-' };
+}
+function solveN(ms, pred, flags) {
+  const W = ms.map((m) => 1 / (m.sh * m.sh));
+  const cost = (p) => ms.reduce((s, m, i) => { const r = Math.hypot(p[0] - m.a.p[0], p[1] - m.a.p[1]) - m.rh; return s + W[i] * r * r; }, 0);
+  const cx = mean(ms.map((m) => m.a.p[0])), cy = mean(ms.map((m) => m.a.p[1]));
+  const starts = [[cx + 1, cy + 1], [cx + 15, cy + 15], [cx - 15, cy - 15]]; if (pred) starts.unshift(pred.slice());
+  let best = null;
+  for (const s0 of starts) {
+    const p = s0.slice();
+    for (let it = 0; it < 30; it++) {
+      let a11 = 0, a12 = 0, a22 = 0, b1 = 0, b2 = 0;
+      ms.forEach((m, i) => {
+        const dx = p[0] - m.a.p[0], dy = p[1] - m.a.p[1], r = Math.hypot(dx, dy) || 1e-3, jx = dx / r, jy = dy / r, res = r - m.rh;
+        a11 += W[i] * jx * jx; a12 += W[i] * jx * jy; a22 += W[i] * jy * jy; b1 -= W[i] * jx * res; b2 -= W[i] * jy * res;
+      });
+      const det = a11 * a22 - a12 * a12; if (Math.abs(det) < 1e-15) break;
+      let d1 = (a22 * b1 - a12 * b2) / det, d2 = (a11 * b2 - a12 * b1) / det;
+      const step = Math.hypot(d1, d2); if (step > 50) { d1 *= 50 / step; d2 *= 50 / step; }
+      p[0] += d1; p[1] += d2; if (step < 1e-3) break;
+    }
+    const c = cost(p); if (!best || c < best.c) best = { p, c };
+  }
+  const nrms = Math.sqrt(best.c / ms.length);
+  if (nrms > 3) flags.push('The distances disagree with each other');
+  return { x: best.p[0], y: best.p[1], alt: null, ok: nrms <= 3, side: '' };
+}
+function posCov(ms, x, y, inflate) {
+  let a11 = 0, a12 = 0, a22 = 0;
+  for (const m of ms) {
+    const dx = x - m.a.p[0], dy = y - m.a.p[1], r = Math.hypot(dx, dy); if (r < 0.05) continue;
+    const jx = dx / r, jy = dy / r, w = 1 / (m.sh * m.sh); a11 += w * jx * jx; a12 += w * jx * jy; a22 += w * jy * jy;
+  }
+  const BIG = 1e4, det = a11 * a22 - a12 * a12;
+  if (!(det > 1e-12)) return [[BIG, 0], [0, BIG]];
+  const c = [[a22 / det * inflate, -a12 / det * inflate], [-a12 / det * inflate, a11 / det * inflate]];
+  if (c[0][0] > BIG || c[1][1] > BIG) { const k = BIG / Math.max(c[0][0], c[1][1]); c.forEach((r) => { r[0] *= k; r[1] *= k; }); }
+  return c;
+}
+
+// =====================================================================
+// Kalman filter (2D constant velocity)
+// =====================================================================
+const mm = (A, B) => A.map((r) => B[0].map((_, j) => r.reduce((s, v, k) => s + v * B[k][j], 0)));
+const tr = (A) => A[0].map((_, j) => A.map((r) => r[j]));
+const madd = (A, B) => A.map((r, i) => r.map((v, j) => v + B[i][j]));
+const Fm = (dt) => [[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]];
+function Qm(dt) { const q = cfg.accelSigma ** 2, a = dt ** 4 / 4 * q, b = dt ** 3 / 2 * q, c = dt * dt * q; return [[a, 0, b, 0], [0, a, 0, b], [b, 0, c, 0], [0, b, 0, c]]; }
+function kfPredictPos(d, now) {
+  if (!cfg.kalman || !d.kf || now - d.kf.t > 10000) return null;
+  const dt = Math.min((now - d.kf.t) / 1000, 5); return [d.kf.x[0] + d.kf.x[2] * dt, d.kf.x[1] + d.kf.x[3] * dt];
+}
+function kfUpdate(d, now, z, R) {
+  if (!d.kf || now - d.kf.t > 10000) { d.kf = { t: now, x: [z[0], z[1], 0, 0], P: [[R[0][0], R[0][1], 0, 0], [R[1][0], R[1][1], 0, 0], [0, 0, 25, 0], [0, 0, 0, 25]] }; return; }
+  const dt = Math.max(0.01, (now - d.kf.t) / 1000), F = Fm(dt);
+  let x = mm(F, d.kf.x.map((v) => [v])).map((r) => r[0]);
+  let P = madd(mm(mm(F, d.kf.P), tr(F)), Qm(dt));
+  const S = [[P[0][0] + R[0][0], P[0][1] + R[0][1]], [P[1][0] + R[1][0], P[1][1] + R[1][1]]], det = S[0][0] * S[1][1] - S[0][1] * S[1][0];
+  if (!(Math.abs(det) > 1e-12)) { d.kf = { t: now, x, P }; return; }
+  const Si = [[S[1][1] / det, -S[0][1] / det], [-S[1][0] / det, S[0][0] / det]], K = mm(P.map((r) => [r[0], r[1]]), Si);
+  const y = [z[0] - x[0], z[1] - x[1]];
+  x = x.map((v, i) => v + K[i][0] * y[0] + K[i][1] * y[1]);
+  P = mm(K.map((r, i) => [r[0], r[1], 0, 0].map((v, j) => (i === j ? 1 : 0) - v)), P);
+  for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) { const m = (P[i][j] + P[j][i]) / 2; P[i][j] = P[j][i] = m; }
+  d.kf = { t: now, x, P };
+}
+
+// =====================================================================
+// Fix computation
+// =====================================================================
+const fixRows = [];
+let trial = null;
+const trials = [];
+function scheduleFix(id) { const d = dstate(id); if (d.pending) return; d.pending = true; setTimeout(() => { d.pending = false; computeFix(id); }, 40); }
+function computeFix(id) {
+  const di = droneIdx(id); if (di < 0) return;
+  const dc = cfg.drones[di], d = dstate(id), now = Date.now(), flags = [];
+  if (!REF || GA.length < 2) { d.flags = ['Set at least 2 nodes first']; return; }
+  const alt = droneU(dc, d);
+  if (alt.fallback) flags.push(`No ${dc.altMode === 'gps' ? 'GPS altitude' : 'ALT data'}, using the set flight height`);
+  const ms = [];
+  for (const a of GA) {
+    const s = d.rssi[a.id]; if (!s) continue;
+    const rec = s.filter((x) => now - x.t <= cfg.winSec * 1000).slice(-cfg.winN); if (!rec.length) continue;
+    const r = median(rec.map((x) => x.v)), dist = rangeFromRssi(r, a), dz = alt.u - a.p[2];
+    let rh;
+    if (dist <= Math.abs(dz)) { rh = 0; flags.push(`Distance to ${a.id} (${fL(dist)}) is less than the height difference (${fL(Math.abs(dz))})`); }
+    else rh = Math.sqrt(dist * dist - dz * dz);
+    ms.push({ a, rssi: r, n: rec.length, d: dist, rh, sh: Math.min(rangeSigma(dist, a, rec.length) * dist / Math.max(rh, 1), 1e3) });
+  }
+  d.meas = ms;
+  if (ms.length < 2) { d.flags = [`Hearing ${ms.length} of ${GA.length} nodes, need 2`]; return; }
+  const pred = kfPredictPos(d, now) || (d.est && now - d.est.t < 10000 ? [d.est.x, d.est.y] : null);
+  const sol = ms.length === 2 ? solve2(ms, dc.side, pred, flags) : solveN(ms, pred, flags);
+  if (!sol) { d.flags = flags; return; }
+  sol.cov = posCov(ms, sol.x, sol.y, sol.ok ? 1 : 4);
+  let ex = sol.x, ey = sol.y, cov = sol.cov;
+  // consecutive fixes share most of their packets (sliding median), so each one carries less new information
+  const kCorr = Math.max(1, Math.min(cfg.winN, mean(ms.map((m) => m.n))));
+  if (cfg.kalman) { kfUpdate(d, now, [sol.x, sol.y], sol.cov.map((r) => r.map((v) => v * kCorr))); ex = d.kf.x[0]; ey = d.kf.x[1]; cov = [[d.kf.P[0][0], d.kf.P[0][1]], [d.kf.P[1][0], d.kf.P[1][1]]]; }
+  else d.kf = null;
+  const g = fromENU(ex, ey, alt.u);
+  const tr2 = cov[0][0] + cov[1][1], dtm = cov[0][0] * cov[1][1] - cov[0][1] * cov[1][0];
+  const sigMax = Math.sqrt(Math.max(0, tr2 / 2 + Math.sqrt(Math.max(0, tr2 * tr2 / 4 - dtm))));
+  d.fix = sol; d.flags = flags;
+  d.est = { t: now, x: ex, y: ey, u: alt.u, lat: g[0], lon: g[1], cov, sig: sigMax, altSrc: alt.src, err: null };
+  if (sol.alt) { const q = fromENU(sol.alt[0], sol.alt[1], alt.u); d.fix.altLL = [q[0], q[1]]; }
+  d.track.push({ t: now, x: ex, y: ey, lat: g[0], lon: g[1] }); if (d.track.length > 5000) d.track.shift();
+  const gpsOk = d.gps && d.gps.p && now - d.gps.t < 2000;
+  if (gpsOk) { d.est.err = Math.hypot(ex - d.gps.p[0], ey - d.gps.p[1]); d.errs.push({ t: now, e: d.est.err }); if (d.errs.length > 20000) d.errs.shift(); }
+  fixRows.push({
+    t: now, trial: trial ? trial.name : '', drone: id, name: droneName(dc), nA: ms.length,
+    per: Object.fromEntries(ms.map((m) => [m.a.id, { rssi: m.rssi, d: m.d, rh: m.rh }])),
+    rx: sol.x, ry: sol.y, ex, ey, u: alt.u, lat: g[0], lon: g[1], sx: Math.sqrt(cov[0][0]), sy: Math.sqrt(cov[1][1]),
+    side: sol.side, ok: sol.ok,
+    gps: gpsOk ? { lat: d.gps.lat, lon: d.gps.lon, x: d.gps.p[0], y: d.gps.p[1], alt: d.gps.alt, sats: d.gps.sats } : null,
+    err: d.est.err, flags: flags.join('; '),
+  });
+  if (fixRows.length > 300000) fixRows.shift();
+}
+
+// =====================================================================
+// Incoming lines
+// =====================================================================
+const rawRows = [], links = {}, plSamples = [], warned = new Set();
+const gpsSeen = {};    // source -> {t, fix, lat, lon, sats}
+let counts = { RSSI: 0, GPS: 0, ALT: 0, IMU: 0, other: 0 };
+function warnOnce(key, msg) { if (warned.has(key)) return; warned.add(key); logLine('[dash] ' + msg); }
+function handleLine(line, src) {
+  const now = Date.now();
+  rawRows.push([new Date(now).toISOString(), src, line]); if (rawRows.length > 400000) rawRows.shift();
+  const s = line.trim().replace(/^\[[A-Za-z0-9_]+\]\s*/, '');
+  if (s.startsWith('{')) {                       // JSON status from the existing ME74 GPS firmware
+    let m = null; try { m = JSON.parse(s); } catch (e) {}
+    if (m && m.type === 'status') {
+      counts.GPS++;
+      const fix = m.state === 'fix' && Number.isFinite(m.lat) && Number.isFinite(m.lon);
+      gpsSeen['GPS board'] = { t: now, fix, lat: m.lat, lon: m.lon, sats: m.sats };
+      if (fix) surveyFeed('GPS board', m.lat, m.lon, Number.isFinite(m.alt) ? m.alt : NaN, m.sats);
+      if ($('showData').checked) logLine(line);
+      return;
+    }
+  }
+  const p = s.split(',').map((x) => x.trim()), type = (p[0] || '').toUpperCase();
+  const num = (v) => (v === undefined || v === '' ? NaN : Number(v));
+  let isData = true;
+  if (type === 'RSSI' && p.length >= 4) { counts.RSSI++; onRssi(p[1], p[2], num(p[3]), num(p[4])); }
+  else if (type === 'GPS' && p.length >= 4) {
+    counts.GPS++;
+    const lat = num(p[2]), lon = num(p[3]), fix = Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0);
+    gpsSeen[p[1]] = { t: now, fix, lat, lon, sats: num(p[5]) };
+    if (fix) surveyFeed(p[1], lat, lon, num(p[4]), num(p[5]));
+    onGps(p[1], lat, lon, num(p[4]), num(p[5]), num(p[6]));
+  }
+  else if (type === 'ALT' && p.length >= 3) { counts.ALT++; onAlt(p[1], num(p[2])); }
+  else if (type === 'IMU' && p.length >= 3) { counts.IMU++; const di = droneIdx(p[1]); if (di >= 0) dstate(p[1]).imuCount++; }
+  else { counts.other++; isData = false; }
+  if (!isData || $('showData').checked) logLine((src === 'demo' ? '[demo] ' : '') + line);
+}
+function onRssi(rx, tx, v) {
+  if (!Number.isFinite(v)) return;
+  const now = Date.now();
+  if (cfg.anchors.some((a) => a.id === tx)) { const k = rx + '|' + tx; (links[k] = links[k] || []).push({ t: now, v }); if (links[k].length > 300) links[k].shift(); calFeed(rx, tx, v); return; }
+  if (!cfg.anchors.some((a) => a.id === rx)) { warnOnce('rx' + rx, `Signal from unknown node "${rx}". Node radio IDs are ${cfg.anchors.map((a) => a.id).join(', ')}.`); return; }
+  const di = droneIdx(tx);
+  if (di < 0) { warnOnce('tx' + tx, `Signal for unknown drone "${tx}". Set a drone's radio ID to "${tx}" in Setup.`); return; }
+  const d = dstate(tx); d.lastPkt = now;
+  const arr = (d.rssi[rx] = d.rssi[rx] || []); arr.push({ t: now, v }); if (arr.length > 200) arr.shift();
+  calFeed(rx, tx, v);
+  const ga = GA.find((a) => a.id === rx);
+  if (ga && d.gps && d.gps.p && now - d.gps.t < 1500) {
+    const u = d.gps.alt != null ? d.gps.p[2] : droneU(cfg.drones[di], d).u;
+    plSamples.push({ t: now, anchor: rx, drone: tx, rssi: v, d: Math.hypot(d.gps.p[0] - ga.p[0], d.gps.p[1] - ga.p[1], u - ga.p[2]), trial: trial ? trial.name : '' });
+    if (plSamples.length > 50000) plSamples.shift();
+  }
+  scheduleFix(tx);
+}
+function onGps(id, lat, lon, alt, sats, hdop) {
+  const di = droneIdx(id); if (di < 0) return;     // GPS from a non-drone source is only used by "Set node"
+  const d = dstate(id), now = Date.now();
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) { d.gpsNoFix = now; return; }
+  const g = { t: now, lat, lon, alt: Number.isFinite(alt) ? alt : null, sats, hdop };
+  if (REF) g.p = toENU(lat, lon, g.alt != null ? g.alt : REF.h + cfg.drones[di].alt);
+  d.gps = g;
+  if (g.p) { d.gpsTrack.push({ t: now, x: g.p[0], y: g.p[1], lat, lon }); if (d.gpsTrack.length > 5000) d.gpsTrack.shift(); }
+}
+function onAlt(id, v) { if (droneIdx(id) < 0 || !Number.isFinite(v)) return; dstate(id).altMsg = { t: Date.now(), v }; }
+
+// =====================================================================
+// "Set node": laptop location right away, then GPS averaging if a GPS is sending
+// =====================================================================
+let nodeJob = null, jobSeq = 0;
+function liveGpsSource() {
+  const now = Date.now(), want = $('svSrc').value;
+  const recent = Object.entries(gpsSeen).filter(([, g]) => now - g.t < 5000);
+  if (want !== 'auto') return recent.find(([k]) => k === want) ? want : null;
+  const notDrone = recent.filter(([k]) => droneIdx(k) < 0);
+  const pick = notDrone.find(([k]) => k === 'GPS board') || notDrone[0];
+  return pick ? pick[0] : null;
+}
+function refreshSvSources() {
+  const sel = $('svSrc'), v = sel.value, keys = Object.keys(gpsSeen);
+  if (sel.options.length === keys.length + 1) return;
+  sel.innerHTML = '<option value="auto">Automatic (not a drone)</option>' + keys.map((k) => `<option>${esc(k)}</option>`).join('');
+  sel.value = [...sel.options].some((o) => o.value === v) ? v : 'auto';
+}
+function setAnchorPos(i, lat, lon, src, acc, elev) {
+  const a = cfg.anchors[i];
+  a.lat = +lat.toFixed(8); a.lon = +lon.toFixed(8); a.src = src; a.acc = acc; a.setAt = Date.now();
+  if (elev != null && Number.isFinite(elev)) a.elev = +elev.toFixed(2);
+  const sideKey = BASE ? BASE.plusName + GA.length : '';
+  saveCfg(); rebuildGeometry(); syncNodeMarkers(); refreshNodeCards(); if (zoneLayer) zoneLayer.redraw();
+  if ((BASE ? BASE.plusName + GA.length : '') !== sideKey) renderDroneCards();
+}
+function jobMsg(i, text, warn) { const el = $(`node-${i}-msg`); if (el) { el.textContent = text; el.className = 'msg' + (warn ? ' warn' : ''); } }
+function setNode(i) {
+  if (nodeJob && nodeJob.i === i) { cancelJob('Cancelled.'); return; }
+  if (nodeJob) cancelJob('');
+  if (trial) { jobMsg(i, 'Stop the trial before moving a node.', true); return; }
+  const job = { i, id: ++jobSeq, start: Date.now(), survey: null, laptopDone: false, gotLaptop: false };
+  nodeJob = job;
+  const gsrc = liveGpsSource();
+  if (gsrc) job.survey = { src: gsrc, secs: Math.max(5, cfg.surveySecs || 30), samples: [] };
+  // 1. laptop location (instant placement, rough)
+  if ('geolocation' in navigator) {
+    navigator.geolocation.getCurrentPosition((pos) => {
+      if (nodeJob !== job) return;
+      job.laptopDone = true; job.gotLaptop = true;
+      const c = pos.coords;
+      if (!job.survey || job.survey.samples.length < 3) {
+        setAnchorPos(i, c.latitude, c.longitude, 'laptop', c.accuracy, Number.isFinite(c.altitude) ? c.altitude - (cfg.anchors[i].antH || 0) : null);
+        flyToNodes();
+      }
+      if (!job.survey) finishJob(c.accuracy > 10
+        ? `Placed from the laptop's location, about ${fL(c.accuracy, 0)} off. That is rough: plug in the GPS board and press Set node again, or drag the node on the map to the exact spot.`
+        : `Placed from this device's location (about ${fL(c.accuracy, 0)}). Drag it on the map if it's off.`, c.accuracy > 10);
+    }, (err) => {
+      if (nodeJob !== job) return;
+      job.laptopDone = true;
+      if (!job.survey) finishJob(`Couldn't get the laptop's location (${err.message}). In macOS, allow Chrome under System Settings, Privacy & Security, Location Services. Or plug in the GPS board, or press "Place on map" and drag the node.`, true);
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  } else { job.laptopDone = true; if (!job.survey) { finishJob('This browser has no location access. Plug in the GPS board, or use "Place on map".', true); return; } }
+  refreshNodeCards(); jobTick();
+}
+function cancelJob(text) { if (!nodeJob) return; const i = nodeJob.i; nodeJob = null; refreshNodeCards(); if (text != null) jobMsg(i, text); }
+function finishJob(text, warn) { if (!nodeJob) return; const i = nodeJob.i; nodeJob = null; refreshNodeCards(); jobMsg(i, text, warn); }
+function surveyFeed(src, lat, lon, alt, sats) {
+  refreshSvSources();
+  const j = nodeJob; if (!j || !j.survey || j.survey.src !== src) return;
+  j.survey.samples.push({ lat, lon, alt: Number.isFinite(alt) ? alt : null, sats });
+  const n = j.survey.samples.length;
+  if (n >= 3 && n % 3 === 0) {           // live preview at the running median
+    setAnchorPos(j.i, median(j.survey.samples.map((p) => p.lat)), median(j.survey.samples.map((p) => p.lon)), 'gpsrun', null, null);
+    if (n === 3) flyToNodes();
+  }
+}
+function jobTick() {
+  const j = nodeJob; if (!j) return;
+  const bar = $(`node-${j.i}-bar`), prog = $(`node-${j.i}-prog`);
+  if (j.survey) {
+    const s = j.survey, el = (Date.now() - j.start) / 1000, left = Math.max(0, s.secs - el), last = s.samples.at(-1);
+    if (prog) prog.style.display = ''; if (bar) bar.style.width = (100 * Math.min(1, el / s.secs)) + '%';
+    jobMsg(j.i, s.samples.length ? `Averaging GPS: ${s.samples.length} fixes${last && Number.isFinite(last.sats) ? `, ${last.sats} satellites` : ''}, ${left.toFixed(0)} s left. Keep the GPS on the node.`
+                                 : `Waiting for a GPS fix from "${s.src}"... ${left.toFixed(0)} s left`);
+    if (left <= 0) finishSurvey(j);
+  } else {
+    if (prog) prog.style.display = 'none';
+    jobMsg(j.i, 'Getting the laptop location...');
+  }
+}
+function finishSurvey(j) {
+  const s = j.survey, n = s.samples.length, i = j.i;
+  if (n < 5) {
+    if (isSet(cfg.anchors[i]) && cfg.anchors[i].src === 'gpsrun') cfg.anchors[i].src = 'map';
+    finishJob(`Only ${n} GPS fixes came in, so the GPS wasn't used.${j.gotLaptop ? ' Kept the laptop location.' : ''} Make sure the GPS has a clear view of the sky.`, true);
+    return;
+  }
+  const lat = median(s.samples.map((p) => p.lat)), lon = median(s.samples.map((p) => p.lon));
+  const kN = 111320, kE = kN * Math.cos(lat * D2R);
+  const spread = s.samples.map((p) => Math.hypot((p.lat - lat) * kN, (p.lon - lon) * kE)).sort((x, y) => x - y)[Math.floor(n * 0.95) - 1] || 0;
+  const alts = s.samples.map((p) => p.alt).filter((v) => v != null);
+  setAnchorPos(i, lat, lon, 'gps', Math.max(spread, 1.5), alts.length >= 5 ? median(alts) - (cfg.anchors[i].antH || 0) : null);
+  logLine(`[dash] Node ${cfg.anchors[i].id} set from ${n} GPS fixes (95% within ${spread.toFixed(1)} m)`);
+  flyToNodes();
+  finishJob(`Set from ${n} GPS fixes. 95% of them were within ${fL(spread)}.` + (spread > 5 ? ' That spread is large, try again with a clearer sky.' : ''), spread > 5);
+}
+function placeOnMap(i) {
+  if (trial) { jobMsg(i, 'Stop the trial before moving a node.', true); return; }
+  const a = cfg.anchors[i];
+  if (isSet(a)) { map.flyTo([a.lat, a.lon], Math.max(map.getZoom(), 19)); followOff(); return; }
+  const c = map.getCenter();
+  setAnchorPos(i, c.lat, c.lng, 'map', null, null);
+  jobMsg(i, 'Placed in the middle of the map. Drag it to the exact spot on the satellite image.');
+}
+function nodeStatus(a) {
+  if (!isSet(a)) return { cls: 'none', text: 'Not set' };
+  switch (a.src) {
+    case 'gps': return { cls: 'good', text: `GPS, ±${fL(a.acc)}` };
+    case 'gpsrun': return { cls: 'ok', text: 'Averaging GPS...' };
+    case 'laptop': return a.acc > 10 ? { cls: 'rough', text: `Laptop, ±${fL(a.acc, 0)}` } : { cls: 'ok', text: `Device, ±${fL(a.acc, 0)}` };
+    case 'map': return { cls: 'ok', text: 'Placed on map' };
+    case 'demo': return { cls: 'ok', text: 'Demo spot' };
+    default: return { cls: 'ok', text: 'Typed in' };
+  }
+}
+
+// =====================================================================
+// Setup tab: nodes and drones
+// =====================================================================
+const openDetails = new Set();
+function renderNodeCards() {
+  $('nodeList').innerHTML = cfg.anchors.map((a, i) => `
+    <div class="node" id="node-${i}">
+      <div class="nodeTop">
+        <span class="badge" style="--c:${anchorColor(i)}">${esc(a.id)}</span>
+        <div class="title"><b>Node ${esc(a.id)}</b><span class="coord" id="node-${i}-coord"></span></div>
+        <span class="chip" id="node-${i}-chip"></span>
+      </div>
+      <div class="btns" style="margin-top:2px">
+        <button class="primary setBtn" id="node-${i}-btn" data-set="${i}">Set node</button>
+        <button class="small" data-place="${i}" id="node-${i}-place"></button>
+      </div>
+      <div class="prog" id="node-${i}-prog" style="display:none"><div id="node-${i}-bar"></div></div>
+      <div class="msg" id="node-${i}-msg"></div>
+      <details class="more" data-det="${i}" ${openDetails.has(i) ? 'open' : ''}><summary>Details</summary>
+        <div class="g2">
+          <label>Latitude<input data-a="${i}" data-f="lat" value="${a.lat ?? ''}" placeholder="42.4075120"></label>
+          <label>Longitude<input data-a="${i}" data-f="lon" value="${a.lon ?? ''}" placeholder="-71.1190400"></label>
+          <label>Antenna height above ground (${us()})<input data-a="${i}" data-f="antH" type="number" step="any" value="${toDisp(a.antH)}"></label>
+          <label>Ground elevation (${us()})<input data-a="${i}" data-f="elev" type="number" step="any" value="${toDisp(a.elev)}"></label>
+          <label>Signal at 1 m (dBm)<input data-a="${i}" data-f="A" type="number" step="0.5" value="${a.A}"></label>
+          <label>Fade rate n<input data-a="${i}" data-f="n" type="number" step="0.05" min="1" max="6" value="${a.n}"></label>
+        </div>
+        <p class="hint">Radio ID: <b>${esc(a.id)}</b> (what the firmware must send). Ground elevation only matters if the nodes are at different heights.
+          ${i >= 2 ? `<button class="link" data-del="${i}">Remove this node</button>` : ''}</p>
+      </details>
+    </div>`).join('');
+  $('addNode').disabled = cfg.anchors.length >= MAX_ANCHORS;
+  refreshNodeCards();
+}
+function refreshNodeCards() {
+  cfg.anchors.forEach((a, i) => {
+    const c = $(`node-${i}-coord`); if (!c) return;
+    c.textContent = isSet(a) ? `${a.lat.toFixed(7)}, ${a.lon.toFixed(7)}` : 'Not set yet'; c.className = 'coord' + (isSet(a) ? '' : ' unset');
+    const st = nodeStatus(a), chip = $(`node-${i}-chip`); chip.className = 'chip ' + st.cls; chip.textContent = st.text;
+    const busy = nodeJob && nodeJob.i === i, btn = $(`node-${i}-btn`);
+    btn.textContent = busy ? 'Cancel' : (isSet(a) ? 'Set node again' : 'Set node');
+    btn.className = busy ? 'setBtn' : 'primary setBtn';
+    btn.disabled = !!trial;
+    $(`node-${i}-place`).textContent = isSet(a) ? 'Show on map' : 'Place on map';
+    if (!busy) $(`node-${i}-prog`).style.display = 'none';
+    ['lat', 'lon'].forEach((f) => { const inp = document.querySelector(`[data-a="${i}"][data-f="${f}"]`); if (inp && document.activeElement !== inp) inp.value = a[f] ?? ''; });
+    const el = document.querySelector(`[data-a="${i}"][data-f="elev"]`); if (el && document.activeElement !== el) el.value = toDisp(a.elev);
+  });
+  const nSet = cfg.anchors.filter(isSet).length;
+  $('nodeHint').textContent = nSet >= 2 && cfg.anchors.length === 2 ? 'A 3rd node, off the line between A and B, removes the mirror-image problem.' : '';
+}
+$('nodeList').addEventListener('click', (e) => {
+  const s = e.target.closest('[data-set]'); if (s) { setNode(+s.dataset.set); return; }
+  const p = e.target.closest('[data-place]'); if (p) { placeOnMap(+p.dataset.place); return; }
+  const d = e.target.closest('[data-del]'); if (d) { const i = +d.dataset.del; if (nodeJob) cancelJob(''); cfg.anchors.splice(i, 1); cfg.anchors.forEach((a, k) => { a.id = String.fromCharCode(65 + k); }); saveCfg(); rebuildGeometry(); renderAll(); }
+});
+$('nodeList').addEventListener('toggle', (e) => { const d = e.target.closest('[data-det]'); if (d) { const i = +d.dataset.det; d.open ? openDetails.add(i) : openDetails.delete(i); } }, true);
+$('nodeList').addEventListener('change', (e) => {
+  const el = e.target, i = +el.dataset.a, f = el.dataset.f; if (!f) return;
+  const a = cfg.anchors[i], v = el.value.trim();
+  if (f === 'lat' || f === 'lon') {
+    const m = v.match(/^\s*(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (f === 'lat' && m) { a.lat = +m[1]; a.lon = +m[2]; } else a[f] = v === '' ? null : Number(v);
+    if (a[f] != null && !Number.isFinite(a[f])) a[f] = null;
+    a.src = isSet(a) ? 'typed' : 'none'; a.acc = null;
+  } else if (f === 'elev' || f === 'antH') a[f] = v === '' ? 0 : fromDisp(Number(v));
+  else if (Number.isFinite(Number(v))) a[f] = Number(v);
+  saveCfg(); rebuildGeometry(); syncNodeMarkers(); refreshNodeCards(); if (zoneLayer) zoneLayer.redraw();
+  if (f === 'lat' || f === 'lon') flyToNodes();
+});
+$('addNode').onclick = () => {
+  if (cfg.anchors.length >= MAX_ANCHORS) return;
+  const last = cfg.anchors[cfg.anchors.length - 1];
+  cfg.anchors.push({ id: String.fromCharCode(65 + cfg.anchors.length), lat: null, lon: null, elev: last.elev, antH: last.antH, A: last.A, n: last.n, src: 'none', acc: null });
+  saveCfg(); renderAll();
+};
+function renderDroneCards() {
+  const pn = BASE ? BASE.plusName : 'one', mn = BASE ? BASE.minusName : 'other';
+  $('droneList').innerHTML = cfg.drones.map((d, i) => `
+    <div class="node">
+      <div class="nodeTop">
+        <span class="badge round" style="--c:${droneColor(i)}"></span>
+        <div class="title"><b>${esc(droneName(d))}</b><span>Drone ${i + 1}, radio ID ${esc(d.id)}</span></div>
+      </div>
+      <div class="g2">
+        <label>Flight height (${us()})<input data-d="${i}" data-f="alt" type="number" step="any" value="${toDisp(d.alt)}"></label>
+        <label>Starts on which side<select data-d="${i}" data-f="side" ${GA.length > 2 ? 'disabled title="Not needed with 3+ nodes"' : ''}>
+          <option value="auto+">${esc(pn)} side of ${BASE ? `${BASE.a}-${BASE.b}` : 'the node line'}</option>
+          <option value="auto-">${esc(mn)} side of ${BASE ? `${BASE.a}-${BASE.b}` : 'the node line'}</option>
+          <option value="+">Always ${esc(pn)} side</option><option value="-">Always ${esc(mn)} side</option></select></label>
+      </div>
+      <details class="more"><summary>Details</summary>
+        <div class="g2">
+          <label>Name<input data-d="${i}" data-f="name" value="${esc(d.name)}"></label>
+          <label>Radio ID (firmware)<input data-d="${i}" data-f="id" value="${esc(d.id)}"></label>
+          <label style="grid-column:1/-1">Height comes from<select data-d="${i}" data-f="altMode">
+            <option value="fixed">The flight height above</option><option value="gps">The drone's GPS altitude</option><option value="msg">ALT messages</option></select></label>
+        </div>
+        <p class="hint">With 2 nodes there are always two possible spots, mirrored across the line between the nodes.
+          Tell it which side the drone takes off on and it follows the track from there.</p>
+      </details>
+    </div>`).join('');
+  cfg.drones.forEach((d, i) => {
+    $('droneList').querySelector(`[data-d="${i}"][data-f="side"]`).value = d.side;
+    $('droneList').querySelector(`[data-d="${i}"][data-f="altMode"]`).value = d.altMode;
+  });
+}
+$('droneList').addEventListener('change', (e) => {
+  const el = e.target, i = +el.dataset.d, f = el.dataset.f; if (!f) return;
+  const d = cfg.drones[i], v = el.value.trim();
+  if (f === 'id') { if (v && v !== d.id) { if (DS[d.id]) { DS[v] = DS[d.id]; delete DS[d.id]; } d.id = v; } }
+  else if (f === 'name') d.name = v || d.id;
+  else if (f === 'alt') d.alt = fromDisp(Number(v) || 0);
+  else d[f] = v;
+  if (f === 'side' && DS[d.id]) { DS[d.id].kf = null; DS[d.id].est = null; }
+  saveCfg();
+  if (f === 'name' || f === 'id') { renderDroneCards(); renderCalSelects(); renderLegends(); rebuildDroneMarkers(); }
+  if (f === 'alt' && zoneLayer) zoneLayer.redraw();
+});
+
+// =====================================================================
+// Live tab
+// =====================================================================
+function bars(rssi) {
+  const lvl = rssi > -60 ? 4 : rssi > -75 ? 3 : rssi > -90 ? 2 : rssi > -105 ? 1 : 0;
+  return `<span class="bars">${[5, 8, 11, 14].map((h, k) => `<i class="${k < lvl ? 'on' : ''}" style="height:${h}px"></i>`).join('')}</span>`;
+}
+function renderLive() {
+  const now = Date.now();
+  $('liveCards').innerHTML = cfg.drones.map((dc, i) => {
+    const d = DS[dc.id], e = d && d.est, age = d && d.lastPkt ? (now - d.lastPkt) / 1000 : null;
+    const live = age != null && age < 3;
+    const flags = d ? [...d.flags] : [];
+    if (age != null && age >= 3) flags.unshift(`No radio packets for ${age.toFixed(0)} s`);
+    const errs = d ? d.errs.filter((x) => now - x.t < 60000).map((x) => x.e) : [];
+    const sig = d && d.meas && d.meas.length ? `<div class="sig">` + d.meas.map((m) =>
+      `<span class="sw sq" style="background:${anchorColor(m.a.idx)}"></span><span>Node ${esc(m.a.id)}</span><span>${bars(m.rssi)} <span class="num" style="color:var(--muted)">${m.rssi.toFixed(0)} dBm</span></span><b class="num">${fL(m.d)}</b>`).join('') + '</div>' : '';
+    return `<div class="card live">
+      <div class="nodeTop">
+        <span class="badge round" style="--c:${droneColor(i)}"></span>
+        <div class="title"><b>${esc(droneName(dc))}</b><span>radio ID ${esc(dc.id)}</span></div>
+        <span class="state ${live ? 'on' : 'off'}">${live ? 'Receiving' : (age == null ? 'No signal yet' : 'Lost signal')}</span>
+      </div>
+      <div class="big">${e ? `${e.lat.toFixed(7)}, ${e.lon.toFixed(7)}` : '--'}</div>
+      <div class="sub">${e ? `${fL(e.x)} east, ${fL(e.y)} north of node ${esc(GA[0] ? GA[0].id : '')} &middot; ${fL(e.u)} up (${esc(e.altSrc)})` : 'Waiting for signal from at least 2 nodes'}
+        ${e ? ` &middot; <a href="https://www.google.com/maps/search/?api=1&query=${e.lat.toFixed(7)},${e.lon.toFixed(7)}" target="_blank" rel="noopener">Google Maps</a>` : ''}</div>
+      <div class="stat">
+        <div><b>${e ? '&plusmn;' + fL(e.sig, 0) : '--'}</b>expected accuracy (1&sigma;)</div>
+        <div><b>${e && e.err != null ? fL(e.err) : '--'}</b>off from its GPS now</div>
+        <div><b>${errs.length ? fL(median(errs)) : '--'}</b>median off (last min)</div>
+      </div>
+      ${sig}
+      ${flags.length ? `<ul class="flags">${flags.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : ''}
+    </div>`;
+  }).join('');
+  $('trialInfo').textContent = trial ? `Recording, ${fmtDur(now - trial.start)}` : (trials.length ? `${trials.length} trial(s) saved this session` : 'Press Start trial in the top bar');
+}
+const fmtDur = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+
+// =====================================================================
+// Trials
+// =====================================================================
+function nextTrialName() { return `Trial ${(cfg.trialCount || 0) + 1}`; }
+$('trialBtn').onclick = () => {
+  if (trial) { stopTrial(); return; }
+  if (GA.length < 2) { setHint('Set at least 2 nodes before starting a trial.', 'warn'); showTab('setup'); return; }
+  if (nodeJob) cancelJob('');
+  const name = $('trialName').value.trim() || nextTrialName();
+  trial = { name, start: Date.now(), end: null }; trials.push(trial);
+  cfg.trialCount = (cfg.trialCount || 0) + 1; saveCfg();
+  logLine('[dash] Started ' + name);
+  syncNodeMarkers(); refreshNodeCards(); showTab('live'); updateTop();
+};
+function stopTrial() {
+  if (!trial) return;
+  trial.end = Date.now(); logLine(`[dash] Ended ${trial.name} (${fmtDur(trial.end - trial.start)})`);
+  trial = null; $('trialName').value = nextTrialName();
+  syncNodeMarkers(); refreshNodeCards(); renderStats(); updateTop();
+}
+function statsFor(rows) { const e = rows.map((r) => r.err).filter((v) => v != null); if (!e.length) return null; return { n: e.length, med: median(e), rmse: Math.sqrt(mean(e.map((v) => v * v))), max: Math.max(...e) }; }
+function trialSummaryRows() {
+  const out = [];
+  for (const g of [...trials.map((t) => t.name), 'All data']) for (const dc of cfg.drones) {
+    const rows = fixRows.filter((r) => r.drone === dc.id && (g === 'All data' || r.trial === g)); if (!rows.length) continue;
+    const s = statsFor(rows), t = trials.find((x) => x.name === g);
+    out.push({ trial: g, drone: droneName(dc), fixes: rows.length, withGps: s ? s.n : 0, med: s ? s.med : null, rmse: s ? s.rmse : null, max: s ? s.max : null, secs: t ? ((t.end || Date.now()) - t.start) / 1000 : null });
+  }
+  return out;
+}
+function renderStats() {
+  const rows = trialSummaryRows();
+  const v = (m, d = 1) => (m == null || !Number.isFinite(m)) ? '--' : (m * uk()).toFixed(d);
+  $('statsTable').innerHTML = rows.length ? `<table><thead><tr><th>Trial</th><th>Drone</th><th>Fixes</th><th>Median (${us()})</th><th>RMSE</th><th>Max</th></tr></thead><tbody>` +
+    rows.map((r) => `<tr><td>${esc(r.trial)}</td><td>${esc(r.drone)}</td><td>${r.fixes}${r.withGps < r.fixes ? `<br><span class="hint">${r.withGps} w/ GPS</span>` : ''}</td>
+      <td><b>${v(r.med)}</b></td><td>${v(r.rmse)}</td><td>${v(r.max, 0)}</td></tr>`).join('') + '</tbody></table>'
+    : '<p class="hint" style="margin:0">No positions yet.</p>';
+}
+
+// =====================================================================
+// Calibration
+// =====================================================================
+let calRun = null, lastFit = null;
+const calPoints = [];
+function calFeed(rx, tx, v) {
+  if (!calRun || rx !== calRun.anchor || (calRun.drone !== '*' && tx !== calRun.drone)) return;
+  calRun.vals.push(v);
+  $('calBar').style.width = (100 * calRun.vals.length / calRun.need) + '%';
+  $('calText').textContent = `Collecting: ${calRun.vals.length} of ${calRun.need}, last ${v} dBm`;
+  if (calRun.vals.length >= calRun.need) {
+    const m = median(calRun.vals), mu = mean(calRun.vals), sd = Math.sqrt(mean(calRun.vals.map((x) => (x - mu) ** 2)));
+    calPoints.push({ anchor: calRun.anchor, d: calRun.dist, rssi: m, n: calRun.vals.length, sd, src: 'tape' });
+    $('calText').textContent = `Saved node ${calRun.anchor} at ${calRun.dist} m: ${m.toFixed(1)} dBm (spread ${sd.toFixed(1)} dB)`;
+    calRun = null; $('calGo').disabled = false; $('calCancel').disabled = true; $('calBar').style.width = '0';
+    renderCalTable();
+  }
+}
+function fitGroups(points) {
+  const by = {};
+  for (const p of points) if (p.d > 0 && Number.isFinite(p.rssi)) (by[p.anchor] = by[p.anchor] || []).push(p);
+  const out = [];
+  for (const [id, ps] of Object.entries(by)) {
+    const anc = cfg.anchors.find((a) => a.id === id); if (!anc) continue;
+    const xs = ps.map((p) => 10 * Math.log10(p.d)), ys = ps.map((p) => p.rssi);
+    let dmin = Infinity, dmax = 0; for (const p of ps) { dmin = Math.min(dmin, p.d); dmax = Math.max(dmax, p.d); }
+    let A, n, note = '';
+    if (ps.length >= 2 && dmax / dmin >= 1.5) {
+      const mx = mean(xs), my = mean(ys); let sxx = 0, sxy = 0;
+      xs.forEach((x, i) => { sxx += (x - mx) ** 2; sxy += (x - mx) * (ys[i] - my); });
+      const slope = sxy / sxx; n = -slope; A = my - slope * mx;
+      if (!(n >= 1 && n <= 6)) note = 'n is outside 1 to 6, check the data';
+    } else { n = anc.n; A = mean(ys.map((y, i) => y + n * xs[i])); note = 'Only one distance, so n was kept'; }
+    const res = ys.map((y, i) => y - (A - n * xs[i]));
+    out.push({ id, count: ps.length, A, n, sd: Math.sqrt(res.reduce((s, r) => s + r * r, 0) / Math.max(1, res.length - 2)), dmin, dmax, note });
+  }
+  return out;
+}
+function showFit(res, label) {
+  lastFit = res; $('fitCard').style.display = '';
+  if (!res.length) { $('fitOut').innerHTML = `<p class="hint" style="margin:0">No usable ${esc(label)} yet.</p>`; return; }
+  $('fitOut').innerHTML = `<table><thead><tr><th>Node</th><th>Points</th><th>Signal @1m</th><th>n</th><th>Noise</th><th></th></tr></thead><tbody>` +
+    res.map((r, i) => `<tr><td>${esc(r.id)}</td><td>${r.count}</td><td>${r.A.toFixed(1)}</td><td>${r.n.toFixed(2)}</td><td>${r.sd.toFixed(1)} dB</td>
+      <td><button class="small" data-apply="${i}">Use</button></td></tr>` + (r.note ? `<tr><td colspan="6" class="hint" style="text-align:left">${esc(r.note)}</td></tr>` : '')).join('') +
+    `</tbody></table><div class="btns"><button class="small primary" data-apply="all">Use all</button><button class="small" data-sigma="1">Also set signal noise to ${mean(res.map((r) => r.sd)).toFixed(1)} dB</button></div>
+    <p class="hint">From ${esc(label)}, ${fmt(Math.min(...res.map((r) => r.dmin)), 1)} to ${fmt(Math.max(...res.map((r) => r.dmax)), 1)} m.</p>`;
+}
+$('fitOut').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b || !lastFit) return;
+  if (b.dataset.sigma) { cfg.sigmaDb = +mean(lastFit.map((r) => r.sd)).toFixed(1); saveCfg(); renderSettings(); logLine(`[dash] Signal noise set to ${cfg.sigmaDb} dB`); return; }
+  const list = b.dataset.apply === 'all' ? lastFit : [lastFit[+b.dataset.apply]];
+  for (const r of list) { const a = cfg.anchors.find((x) => x.id === r.id); if (a) { a.A = +r.A.toFixed(1); a.n = +r.n.toFixed(2); } }
+  saveCfg(); rebuildGeometry(); renderNodeCards(); if (zoneLayer) zoneLayer.redraw();
+  logLine('[dash] Calibration applied to node ' + list.map((r) => r.id).join(', '));
+  b.textContent = 'Applied';
+});
+function renderCalSelects() {
+  const aSel = $('calAnchor'), dSel = $('calDrone'), av = aSel.value, dv = dSel.value;
+  aSel.innerHTML = cfg.anchors.map((a) => `<option value="${esc(a.id)}">Node ${esc(a.id)}</option>`).join('');
+  dSel.innerHTML = `<option value="*">Any</option>` + cfg.drones.map((d) => `<option value="${esc(d.id)}">${esc(droneName(d))}</option>`).join('');
+  if ([...aSel.options].some((o) => o.value === av)) aSel.value = av;
+  if ([...dSel.options].some((o) => o.value === dv)) dSel.value = dv;
+}
+function renderCalTable() {
+  $('calTable').innerHTML = calPoints.length ? `<table><thead><tr><th>Node</th><th>Distance</th><th>Signal</th><th>Spread</th><th>From</th><th></th></tr></thead><tbody>` +
+    calPoints.map((p, i) => `<tr><td>${esc(p.anchor)}</td><td>${p.d.toFixed(2)} m</td><td>${p.rssi.toFixed(1)}</td><td>${fmt(p.sd, 1)}</td><td>${esc(p.src)}</td>
+      <td><button class="small" data-delcal="${i}" title="Delete">&times;</button></td></tr>`).join('') + '</tbody></table>' : '';
+}
+$('calTable').addEventListener('click', (e) => { const b = e.target.closest('[data-delcal]'); if (b) { calPoints.splice(+b.dataset.delcal, 1); renderCalTable(); } });
+$('calGo').onclick = () => {
+  const dist = parseFloat($('calDist').value);
+  if (!(dist > 0)) { $('calText').textContent = 'Enter the measured distance first.'; $('calDist').focus(); return; }
+  calRun = { anchor: $('calAnchor').value, drone: $('calDrone').value, dist, vals: [], need: 20 };
+  $('calGo').disabled = true; $('calCancel').disabled = false; $('calBar').style.width = '0';
+  $('calText').textContent = `Waiting for packets heard by node ${calRun.anchor}...`;
+};
+$('calCancel').onclick = () => { calRun = null; $('calGo').disabled = false; $('calCancel').disabled = true; $('calBar').style.width = '0'; $('calText').textContent = 'Cancelled.'; };
+$('calLink').onclick = () => {
+  const now = Date.now(); let added = 0;
+  for (const [k, arr] of Object.entries(links)) {
+    const [rx, tx] = k.split('|'), a = GA.find((x) => x.id === rx), b = GA.find((x) => x.id === tx);
+    const rec = arr.filter((x) => now - x.t < 60000).map((x) => x.v); if (!a || !b || rec.length < 3) continue;
+    const mu = mean(rec);
+    calPoints.push({ anchor: rx, d: Math.hypot(a.p[0] - b.p[0], a.p[1] - b.p[1], a.p[2] - b.p[2]), rssi: median(rec), n: rec.length, sd: Math.sqrt(mean(rec.map((x) => (x - mu) ** 2))), src: 'node link' });
+    added++;
+  }
+  $('calText').textContent = added ? `Added ${added} node-to-node point(s). Both antennas are close to the ground, so this link fades faster than a link to a drone in the air. Treat it as a rough check.`
+                                   : 'No node-to-node packets in the last minute.';
+  renderCalTable();
+};
+$('fitPts').onclick = () => showFit(fitGroups(calPoints), 'calibration points');
+$('fitGps').onclick = () => showFit(fitGroups(plSamples), `${plSamples.length} packets with GPS`);
+
+// =====================================================================
+// Settings
+// =====================================================================
+function renderSettings() {
+  $('units').value = cfg.units;
+  document.querySelectorAll('[data-s]').forEach((el) => { const k = el.dataset.s; if (el.type === 'checkbox') el.checked = !!cfg[k]; else el.value = cfg[k]; });
+}
+document.querySelectorAll('[data-s]').forEach((el) => el.addEventListener('change', () => {
+  const k = el.dataset.s;
+  if (el.type === 'checkbox') cfg[k] = el.checked;
+  else { const v = Number(el.value); if (Number.isFinite(v) && v > 0) cfg[k] = k === 'winN' ? Math.round(v) : v; else el.value = cfg[k]; }
+  if (k === 'kalman') for (const d of Object.values(DS)) d.kf = null;
+  saveCfg(); if (zoneLayer) zoneLayer.redraw();
+}));
+$('units').onchange = (e) => { cfg.units = e.target.value; saveCfg(); renderAll(); };
+
+// =====================================================================
+// Saving: one ZIP with everything
+// =====================================================================
+const q = (v) => v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+const toCSV = (header, rows) => [header, ...rows].map((r) => r.map(q).join(',')).join('\n') + '\n';
+const r6 = (v, d = 3) => v == null || !Number.isFinite(v) ? '' : +v.toFixed(d);
+function fixesCSV() {
+  const ids = [...new Set(fixRows.flatMap((r) => Object.keys(r.per)))];
+  return toCSV(['pc_time', 'trial', 'drone', 'drone_id', 'nodes_heard', ...ids.flatMap((id) => [`rssi_${id}_dBm`, `dist_${id}_m`, `ground_dist_${id}_m`]),
+    'raw_x_east_m', 'raw_y_north_m', 'est_x_east_m', 'est_y_north_m', 'height_m', 'est_lat', 'est_lon', 'sigma_x_m', 'sigma_y_m', 'side', 'circles_cross',
+    'gps_lat', 'gps_lon', 'gps_x_east_m', 'gps_y_north_m', 'gps_alt_m', 'gps_sats', 'error_vs_gps_m', 'warnings'],
+    fixRows.map((r) => [new Date(r.t).toISOString(), r.trial, r.name, r.drone, r.nA,
+      ...ids.flatMap((id) => r.per[id] ? [r6(r.per[id].rssi, 1), r6(r.per[id].d), r6(r.per[id].rh)] : ['', '', '']),
+      r6(r.rx), r6(r.ry), r6(r.ex), r6(r.ey), r6(r.u), r6(r.lat, 8), r6(r.lon, 8), r6(r.sx), r6(r.sy), r.side, r.ok ? 1 : 0,
+      r.gps ? r6(r.gps.lat, 8) : '', r.gps ? r6(r.gps.lon, 8) : '', r.gps ? r6(r.gps.x) : '', r.gps ? r6(r.gps.y) : '', r.gps ? r6(r.gps.alt, 2) : '', r.gps ? r.gps.sats : '', r6(r.err), r.flags]));
+}
+const rawCSV = () => toCSV(['pc_time', 'source', 'line'], rawRows);
+const plCSV = () => toCSV(['pc_time', 'trial', 'node', 'drone_id', 'rssi_dBm', 'true_distance_m'], plSamples.map((p) => [new Date(p.t).toISOString(), p.trial, p.anchor, p.drone, p.rssi, r6(p.d)]));
+const summaryCSV = () => toCSV(['trial', 'drone', 'fixes', 'fixes_with_gps', 'median_error_m', 'rmse_m', 'max_error_m', 'duration_s'],
+  trialSummaryRows().map((r) => [r.trial, r.drone, r.fixes, r.withGps, r6(r.med), r6(r.rmse), r6(r.max), r6(r.secs, 0)]));
+const nodesCSV = () => toCSV(['node', 'lat', 'lon', 'ground_elev_m', 'antenna_height_m', 'set_by', 'accuracy_m', 'signal_at_1m_dBm', 'n'],
+  cfg.anchors.map((a) => [a.id, a.lat, a.lon, a.elev, a.antH, a.src, r6(a.acc, 1), a.A, a.n]));
+const setupJSON = () => JSON.stringify({ cfg, calPoints }, null, 2);
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function makeZip(files) {   // files: [{name, text}], stored (no compression)
+  const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+  const d = new Date(), dosT = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), dosD = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  for (const f of files) {
+    const name = enc.encode(f.name), data = enc.encode(f.text), crc = crc32(data);
+    const h = new DataView(new ArrayBuffer(30));
+    [[0, 0x04034b50, 4], [4, 20, 2], [6, 0, 2], [8, 0, 2], [10, dosT, 2], [12, dosD, 2], [14, crc, 4], [18, data.length, 4], [22, data.length, 4], [26, name.length, 2], [28, 0, 2]]
+      .forEach(([o, v, n]) => n === 4 ? h.setUint32(o, v, true) : h.setUint16(o, v, true));
+    parts.push(new Uint8Array(h.buffer), name, data);
+    const c = new DataView(new ArrayBuffer(46));
+    [[0, 0x02014b50, 4], [4, 20, 2], [6, 20, 2], [8, 0, 2], [10, 0, 2], [12, dosT, 2], [14, dosD, 2], [16, crc, 4], [20, data.length, 4], [24, data.length, 4], [28, name.length, 2],
+     [30, 0, 2], [32, 0, 2], [34, 0, 2], [36, 0, 2], [38, 0, 4], [42, off, 4]].forEach(([o, v, n]) => n === 4 ? c.setUint32(o, v, true) : c.setUint16(o, v, true));
+    central.push(new Uint8Array(c.buffer), name);
+    off += 30 + name.length + data.length;
+  }
+  const cdSize = central.reduce((s, p) => s + p.length, 0), e = new DataView(new ArrayBuffer(22));
+  [[0, 0x06054b50, 4], [4, 0, 2], [6, 0, 2], [8, files.length, 2], [10, files.length, 2], [12, cdSize, 4], [16, off, 4], [20, 0, 2]]
+    .forEach(([o, v, n]) => n === 4 ? e.setUint32(o, v, true) : e.setUint16(o, v, true));
+  return new Blob([...parts, ...central, new Uint8Array(e.buffer)], { type: 'application/zip' });
+}
+function downloadBlob(name, blob) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
+const stamp = () => { const d = new Date(), p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}`; };
+$('saveBtn').onclick = () => {
+  const s = stamp();
+  downloadBlob(`ME74_P2_${s}.zip`, makeZip([
+    { name: 'fixes.csv', text: fixesCSV() }, { name: 'trial_summary.csv', text: summaryCSV() }, { name: 'nodes.csv', text: nodesCSV() },
+    { name: 'signal_vs_gps.csv', text: plCSV() }, { name: 'raw_log.csv', text: rawCSV() }, { name: 'setup.json', text: setupJSON() }]));
+  logLine(`[dash] Saved ME74_P2_${s}.zip (${fixRows.length} fixes)`);
+};
+$('saveFix').onclick = () => downloadBlob(`p2_fixes_${stamp()}.csv`, new Blob([fixesCSV()], { type: 'text/csv' }));
+$('saveRaw').onclick = () => downloadBlob(`p2_raw_${stamp()}.csv`, new Blob([rawCSV()], { type: 'text/csv' }));
+$('savePl').onclick = () => downloadBlob(`p2_signal_vs_gps_${stamp()}.csv`, new Blob([plCSV()], { type: 'text/csv' }));
+$('saveSetup').onclick = () => downloadBlob(`p2_setup_${stamp()}.json`, new Blob([setupJSON()], { type: 'application/json' }));
+$('loadSetup').onclick = () => $('setupFile').click();
+$('setupFile').onchange = async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const o = JSON.parse(await f.text()); cfg = mergeCfg(o.cfg || o);
+    if (Array.isArray(o.calPoints)) { calPoints.length = 0; calPoints.push(...o.calPoints); }
+    saveCfg(); rebuildGeometry(); renderAll(); syncNodeMarkers(); flyToNodes(); logLine('[dash] Setup imported from ' + f.name);
+  } catch (err) { logLine('[dash] Could not read that setup file: ' + err.message); }
+  e.target.value = '';
+};
+$('clearData').onclick = () => {
+  if (trial) stopTrial();
+  fixRows.length = 0; rawRows.length = 0; plSamples.length = 0; trials.length = 0;
+  for (const k of Object.keys(DS)) delete DS[k];
+  for (const k of Object.keys(links)) delete links[k];
+  counts = { RSSI: 0, GPS: 0, ALT: 0, IMU: 0, other: 0 };
+  logLine('[dash] Data cleared.'); renderStats();
+};
+
+// =====================================================================
+// Web Serial
+// =====================================================================
+const ports = [];
+$('connectBtn').onclick = async () => {
+  if (ports.length) { [...ports].forEach(closeEntry); return; }
+  if (!('serial' in navigator)) { setHint('This browser can\'t talk to USB boards. Open this file in Chrome or Edge.', 'bad'); return; }
+  let port;
+  try { port = await navigator.serial.requestPort(); await port.open({ baudRate: +$('baud').value }); }
+  catch (e) { if (e.name !== 'NotFoundError') logLine('[dash] Connect failed: ' + e.message); return; }
+  const entry = { port, label: 'board' + (ports.length + 1), writer: port.writable.getWriter(), reader: null };
+  ports.push(entry); updateTop(); logLine(`[dash] Connected ${entry.label}`);
+  readLoop(entry);
+};
+async function readLoop(entry) {
+  const dec = new TextDecoderStream(); entry.port.readable.pipeTo(dec.writable).catch(() => {});
+  entry.reader = dec.readable.getReader(); let buf = '';
+  try {
+    while (true) {
+      const { value, done } = await entry.reader.read(); if (done) break;
+      buf += value; let i;
+      while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (line) handleLine(line, entry.label); }
+      if (buf.length > 10000) buf = '';
+    }
+  } catch (e) { logLine(`[dash] ${entry.label} read error: ${e.message}`); }
+  finally { closeEntry(entry); }
+}
+async function closeEntry(entry) {
+  const i = ports.indexOf(entry); if (i < 0) return; ports.splice(i, 1);
+  try { if (entry.reader) await entry.reader.cancel(); } catch (e) {}
+  try { entry.writer.releaseLock(); } catch (e) {}
+  try { await entry.port.close(); } catch (e) {}
+  logLine(`[dash] ${entry.label} disconnected`); updateTop();
+}
+if ('serial' in navigator) navigator.serial.addEventListener('disconnect', (e) => { const en = ports.find((p) => p.port === e.target); if (en) closeEntry(en); });
+$('cmdSend').onclick = async () => {
+  const v = $('cmdIn').value.trim(); if (!v) return;
+  for (const p of ports) { try { await p.writer.write(new TextEncoder().encode(v + '\n')); } catch (e) {} }
+  logLine('> ' + v); $('cmdIn').value = '';
+};
+$('cmdIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('cmdSend').click(); });
+
+// =====================================================================
+// Demo mode: fake drones through the same parser and math
+// =====================================================================
+let sim = null;
+function ensureDemoNodes() {
+  if (cfg.anchors.filter(isSet).length >= 2) return false;
+  const a = cfg.anchors[0], b = cfg.anchors[1];
+  Object.assign(a, { lat: 42.40750, lon: -71.11970, elev: 20, src: 'demo', acc: null });
+  Object.assign(b, { lat: 42.40758, lon: -71.11928, elev: 20.4, src: 'demo', acc: null });
+  saveCfg(); rebuildGeometry(); renderAll(); syncNodeMarkers(); flyToNodes();
+  return true;
+}
+function simTruth(i, t) {
+  const a = GA[0].p, b = GA[1].p, mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], ux = BASE.ux, uy = BASE.uy, L = BASE.L;
+  let u, v;
+  if (i === 0) {
+    const w = Math.max(10, L * 0.8), h = Math.max(8, L * 0.4), off = Math.max(6, L * 0.25), per = 2 * (w + h), s = (t * 3) % per;
+    if (s < w) { u = -w / 2 + s; v = off; } else if (s < w + h) { u = w / 2; v = off + (s - w); }
+    else if (s < 2 * w + h) { u = w / 2 - (s - w - h); v = off + h; } else { u = -w / 2; v = off + h - (s - 2 * w - h); }
+  } else { const R = Math.max(6, L * 0.3), th = t * 2.5 / R; u = R * Math.cos(th) - L * 0.15; v = Math.max(10, L * 0.6) + R * Math.sin(th); }
+  return [mid[0] + u * ux[0] + v * uy[0], mid[1] + u * ux[1] + v * uy[1]];
+}
+function simTick() {
+  if (!BASE) return;
+  const now = Date.now(), t = (now - sim.t0) / 1000; sim.seq++;
+  const doGps = now - sim.lastGps >= 1000; if (doGps) sim.lastGps = now;
+  cfg.drones.forEach((dc, i) => {
+    const p = simTruth(i, t), u = dc.alt;
+    for (const a of GA) {
+      if (Math.random() < 0.05) continue;
+      const dist = Math.max(0.3, Math.hypot(p[0] - a.p[0], p[1] - a.p[1], u - a.p[2]));
+      handleLine(`RSSI,${a.id},${dc.id},${Math.round(a.A - 10 * a.n * Math.log10(dist) + gauss() * cfg.simNoise)},${(9 - dist / 8).toFixed(1)},${sim.seq}`, 'demo');
+    }
+    if (doGps) { const g = fromENU(p[0] + gauss(), p[1] + gauss(), u + gauss() * 1.5); handleLine(`GPS,${dc.id},${g[0].toFixed(7)},${g[1].toFixed(7)},${g[2].toFixed(1)},9,0.9`, 'demo'); }
+  });
+  if (now - sim.lastLink >= 3000) {
+    sim.lastLink = now; const a = GA[0], b = GA[1], d = Math.hypot(a.p[0] - b.p[0], a.p[1] - b.p[1], a.p[2] - b.p[2]);
+    const r = () => Math.round(a.A - 10 * (a.n + 0.6) * Math.log10(d) + gauss() * cfg.simNoise);
+    handleLine(`RSSI,${a.id},${b.id},${r()}`, 'demo'); handleLine(`RSSI,${b.id},${a.id},${r()}`, 'demo');
+  }
+}
+$('simBtn').onclick = () => {
+  if (sim) { clearInterval(sim.timer); sim = null; logLine('[dash] Demo stopped'); updateTop(); return; }
+  if (ensureDemoNodes()) logLine('[dash] Demo placed two nodes on Tufts campus. Press Set node on each to replace them with your real spots.');
+  rebuildGeometry();
+  if (!BASE) { setHint('Demo needs two nodes at different spots.', 'bad'); return; }
+  sim = { t0: Date.now(), seq: 0, lastGps: 0, lastLink: 0, timer: setInterval(simTick, 200) };
+  logLine(`[dash] Demo: signal every 0.2 s with ${cfg.simNoise} dB noise, GPS every 1 s. ${droneName(cfg.drones[0])} flies a rectangle, ${droneName(cfg.drones[1])} a circle.`);
+  followOn(); updateTop();
+};
+
+// =====================================================================
+// Map (Leaflet + Esri imagery)
+// =====================================================================
+const map = L.map('map', { zoomControl: true, maxZoom: 22, worldCopyJump: true }).setView([42.4075, -71.1190], 17);
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+const layers = {
+  sat: L.tileLayer(ESRI + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxNativeZoom: 19, maxZoom: 22, attribution: 'Imagery: Esri, Maxar, Earthstar Geographics' }),
+  street: L.tileLayer(ESRI + 'World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxNativeZoom: 19, maxZoom: 22, attribution: 'Map: Esri, HERE, Garmin, OpenStreetMap contributors' }),
+};
+let tileOk = 0, tileErr = 0;
+for (const l of Object.values(layers)) { l.on('tileload', () => tileOk++); l.on('tileerror', () => tileErr++); }
+function setLayer(k) {
+  cfg.layer = k; saveCfg();
+  for (const [name, l] of Object.entries(layers)) { if (name === k) l.addTo(map); else map.removeLayer(l); }
+  $('lySat').classList.toggle('on', k === 'sat'); $('lyStreet').classList.toggle('on', k === 'street');
+}
+$('lySat').onclick = () => setLayer('sat'); $('lyStreet').onclick = () => setLayer('street');
+L.control.scale({ position: 'bottomright' }).addTo(map);
+
+// nodes
+const nodeMarkers = [];
+function syncNodeMarkers() {
+  while (nodeMarkers.length > cfg.anchors.length) map.removeLayer(nodeMarkers.pop());
+  cfg.anchors.forEach((a, i) => {
+    let m = nodeMarkers[i];
+    if (!isSet(a)) { if (m) { map.removeLayer(m); nodeMarkers[i] = null; } return; }
+    const icon = L.divIcon({ className: '', html: `<div class="nodeMk ${trial ? '' : 'drag'}" style="--c:${anchorColor(i)}">${esc(a.id)}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+    if (!m) {
+      m = L.marker([a.lat, a.lon], { icon, draggable: !trial, zIndexOffset: 1000, autoPan: true });
+      m.on('dragend', () => { const ll = m.getLatLng(); setAnchorPos(i, ll.lat, ll.lng, 'map', null, null); jobMsg(i, 'Moved on the map.'); });
+      m.addTo(map); nodeMarkers[i] = m;
+    } else { m.setLatLng([a.lat, a.lon]); m.setIcon(icon); }
+    if (m.dragging) trial ? m.dragging.disable() : m.dragging.enable();
+    m.unbindTooltip().bindTooltip(`Node ${esc(a.id)}${trial ? '' : ', drag to adjust'}`, { direction: 'top', offset: [0, -12] });
+  });
+}
+// drones
+const droneLayers = {};
+function rebuildDroneMarkers() { for (const k of Object.keys(droneLayers)) { droneLayers[k].group.remove(); delete droneLayers[k]; } }
+function droneLayer(dc, i) {
+  if (droneLayers[dc.id]) return droneLayers[dc.id];
+  const col = colorOf(droneColor(i)), group = L.layerGroup().addTo(map);
+  const o = {
+    group, col,
+    gpsTrack: L.polyline([], { color: col, weight: 2, opacity: 0.85, dashArray: '6 6', interactive: false }).addTo(group),
+    track: L.polyline([], { color: col, weight: 3.5, opacity: 0.95, interactive: false }).addTo(group),
+    acc: L.circle([0, 0], { radius: 1, color: col, weight: 1, opacity: 0.7, fillColor: col, fillOpacity: 0.12, interactive: false }),
+    gps: L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2.5, fill: false, interactive: false }),
+    gpsIn: L.circleMarker([0, 0], { radius: 5, color: col, weight: 2, fill: false, interactive: false }),
+    mirror: L.circleMarker([0, 0], { radius: 5, color: col, weight: 1.5, dashArray: '2 3', fill: false, interactive: false }),
+    rings: [],
+    marker: L.marker([0, 0], { zIndexOffset: 2000 }),
+  };
+  return (droneLayers[dc.id] = o);
+}
+function showLayer(o, layer, on) { const has = o.group.hasLayer(layer); if (on && !has) o.group.addLayer(layer); if (!on && has) o.group.removeLayer(layer); }
+function updateMapLayers() {
+  const now = Date.now();
+  cfg.drones.forEach((dc, i) => {
+    const d = DS[dc.id]; if (!d) return;
+    const o = droneLayer(dc, i), e = d.est;
+    o.track.setLatLngs(d.track.filter((p) => now - p.t < 300000).map((p) => [p.lat, p.lon]));
+    o.gpsTrack.setLatLngs(d.gpsTrack.filter((p) => now - p.t < 300000).map((p) => [p.lat, p.lon]));
+    const gpsNow = d.gps && now - d.gps.t < 5000;
+    if (gpsNow) { o.gps.setLatLng([d.gps.lat, d.gps.lon]); o.gpsIn.setLatLng([d.gps.lat, d.gps.lon]); }
+    showLayer(o, o.gps, gpsNow); showLayer(o, o.gpsIn, gpsNow);
+    if (e) {
+      const stale = now - e.t > 3000;
+      o.marker.setLatLng([e.lat, e.lon]);
+      o.marker.setIcon(L.divIcon({ className: '', html: `<div class="droneMk" style="--c:${droneColor(i)}"><i class="${stale ? 'stale' : ''}"></i><b>${esc(droneName(dc))}${stale ? ' (lost)' : ''}</b></div>`, iconSize: [18, 18], iconAnchor: [9, 9] }));
+      o.acc.setLatLng([e.lat, e.lon]); o.acc.setRadius(Math.min(Math.max(e.sig, 0.5), 500));
+      showLayer(o, o.marker, true); showLayer(o, o.acc, e.sig < 500);
+      o.marker.unbindTooltip().bindTooltip(`<b>${esc(droneName(dc))}</b><br>${e.lat.toFixed(7)}, ${e.lon.toFixed(7)}<br>&plusmn;${fL(e.sig, 0)}${e.err != null ? `, ${fL(e.err)} from its GPS` : ''}`, { direction: 'right', offset: [14, 0] });
+    }
+    // range circles + mirror point
+    const showRings = cfg.circles && e && now - e.t < 5000 && d.meas;
+    while (o.rings.length) o.group.removeLayer(o.rings.pop());
+    if (showRings) for (const m of d.meas) o.rings.push(L.circle([m.a.lat, m.a.lon], { radius: Math.max(m.rh, 0.1), color: o.col, weight: 1.5, opacity: 0.8, dashArray: '5 7', fill: false, interactive: false }).addTo(o.group));
+    const mir = showRings && d.fix && d.fix.altLL;
+    if (mir) o.mirror.setLatLng(d.fix.altLL); showLayer(o, o.mirror, !!mir);
+  });
+  updateMapMsg();
+}
+// best-zone shading (custom canvas layer)
+const ZoneLayer = L.Layer.extend({
+  onAdd(m) { this._c = L.DomUtil.create('canvas', ''); this._c.style.pointerEvents = 'none'; m.getPanes().overlayPane.appendChild(this._c); m.on('moveend zoomend resize', this.redraw, this); this.redraw(); },
+  onRemove(m) { L.DomUtil.remove(this._c); m.off('moveend zoomend resize', this.redraw, this); },
+  redraw() {
+    const m = this._map; if (!m) return;
+    const size = m.getSize(), c = this._c; L.DomUtil.setPosition(c, m.containerPointToLayerPoint([0, 0]));
+    c.width = size.x; c.height = size.y; c.style.width = size.x + 'px'; c.style.height = size.y + 'px';
+    const ctx = c.getContext('2d'); ctx.clearRect(0, 0, size.x, size.y);
+    if (!REF || GA.length < 2) return;
+    const cell = 12, hgt = cfg.drones[0] ? cfg.drones[0].alt : 10, rgb = cssVar('--zone');
+    for (let py = 0; py < size.y; py += cell) for (let px = 0; px < size.x; px += cell) {
+      const ll = m.containerPointToLatLng([px + cell / 2, py + cell / 2]), p = toENU(ll.lat, ll.lng, REF.h), e = expectedError(p[0], p[1], hgt);
+      const al = e < 5 ? 0.42 : e < 10 ? 0.27 : e < 20 ? 0.13 : 0;
+      if (al) { ctx.fillStyle = `rgba(${rgb},${al})`; ctx.fillRect(px, py, cell, cell); }
+    }
+  },
+});
+function expectedError(x, y, hgt) {
+  let a11 = 0, a12 = 0, a22 = 0;
+  for (const a of GA) {
+    const dx = x - a.p[0], dy = y - a.p[1], rh = Math.hypot(dx, dy), d = Math.hypot(rh, hgt - a.p[2]); if (rh < 0.05) continue;
+    const sh = rangeSigma(d, a, cfg.winN) * d / Math.max(rh, 1), w = 1 / (sh * sh), jx = dx / rh, jy = dy / rh;
+    a11 += w * jx * jx; a12 += w * jx * jy; a22 += w * jy * jy;
+  }
+  const det = a11 * a22 - a12 * a12; return det > 1e-12 ? Math.sqrt((a11 + a22) / det) : Infinity;
+}
+let zoneLayer = null;
+function setZones(on) { cfg.zones = on; saveCfg(); $('zonesBtn').classList.toggle('on', on); if (on && !zoneLayer) zoneLayer = new ZoneLayer().addTo(map); if (!on && zoneLayer) { map.removeLayer(zoneLayer); zoneLayer = null; } renderLegends(); }
+$('zonesBtn').onclick = () => setZones(!cfg.zones);
+$('circlesBtn').onclick = () => { cfg.circles = !cfg.circles; saveCfg(); $('circlesBtn').classList.toggle('on', cfg.circles); renderLegends(); };
+// follow / fit
+let follow = true, lastFollow = 0;
+function followOn() { follow = true; $('followBtn').classList.add('on'); fitAll(); }
+function followOff() { follow = false; $('followBtn').classList.remove('on'); }
+$('followBtn').onclick = () => (follow ? followOff() : followOn());
+$('fitBtn').onclick = () => fitAll(true);
+map.on('dragstart', followOff);
+map.on('zoomstart', (e) => { if (!programmaticMove) followOff(); });
+let programmaticMove = false;
+function boundsOfAll(withDrones) {
+  const pts = cfg.anchors.filter(isSet).map((a) => [a.lat, a.lon]);
+  if (withDrones) { const now = Date.now(); for (const dc of cfg.drones) { const d = DS[dc.id]; if (!d) continue;
+    if (d.est && now - d.est.t < 30000) pts.push([d.est.lat, d.est.lon]); if (d.gps && now - d.gps.t < 30000) pts.push([d.gps.lat, d.gps.lon]); } }
+  return pts;
+}
+function fitAll(animate) {
+  const pts = boundsOfAll(true); if (!pts.length) return;
+  programmaticMove = true;
+  if (pts.length === 1) map.setView(pts[0], Math.max(map.getZoom(), 19), { animate: !!animate });
+  else map.fitBounds(L.latLngBounds(pts).pad(0.25), { maxZoom: 20, animate: !!animate });
+  setTimeout(() => { programmaticMove = false; }, 400);
+}
+function flyToNodes() { const pts = boundsOfAll(false); if (!pts.length) return; programmaticMove = true;
+  if (pts.length === 1) map.setView(pts[0], 19); else map.fitBounds(L.latLngBounds(pts).pad(0.4), { maxZoom: 20 });
+  setTimeout(() => { programmaticMove = false; }, 400); }
+function updateMapMsg() {
+  const el = $('mapMsg'); let t = '';
+  if (!cfg.anchors.some(isSet)) t = 'No nodes yet. Stand at node A and press "Set node" in the Setup panel.';
+  else if (tileErr > 4 && tileOk === 0) t = 'No map imagery (offline?). Positions still work. Open this page once with internet at the field to cache the imagery.';
+  el.textContent = t; el.style.display = t ? 'block' : 'none';
+}
+function renderLegends() {
+  const dr = cfg.drones.map((d, i) => `<span><span class="sw dot" style="background:${droneColor(i)}"></span>${esc(droneName(d))}</span>`).join('');
+  const an = cfg.anchors.map((a, i) => `<span><span class="sw sq" style="background:${anchorColor(i)}"></span>Node ${esc(a.id)}</span>`).join('');
+  $('mapLegend').innerHTML = `<div class="legend">${an}${dr}</div><div class="legend" style="margin-top:4px;color:var(--muted)">
+    <span>solid line: radio position</span><span>dashed line + ring: GPS</span><span>shaded circle: expected accuracy</span>
+    ${cfg.circles ? '<span>dashed circles: distance from each node, dotted ring: mirror spot</span>' : ''}
+    ${cfg.zones ? '<span><span class="sw sq" style="background:rgba(124,58,237,.45)"></span>best zones: under 5 / 10 / 20 m expected error</span>' : ''}</div>`;
+  $('errLegend').innerHTML = dr;
+  $('plLegend').innerHTML = an;
+}
+
+// =====================================================================
+// Charts
+// =====================================================================
+let errHover = null, plHover = null;
+function sizeCanvas(c) {
+  const dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0); return [w, h];
+}
+const niceStep = (span) => { const raw = span / 5, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p; };
+const chartC = () => ({ text: cssVar('--text'), muted: cssVar('--muted'), line: cssVar('--line'), grid: cssVar('--grid'), card: cssVar('--card') });
+function emptyChart(ctx, W, H, C, msg) { ctx.fillStyle = C.muted; ctx.font = '13px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.fillText(msg, W / 2, H / 2); ctx.textAlign = 'left'; }
+function drawErrChart() {
+  const c = $('errChart'); if (!c.clientWidth) return;
+  const [W, H] = sizeCanvas(c), ctx = c.getContext('2d'), C = chartC(); ctx.clearRect(0, 0, W, H);
+  const pad = { l: 44, r: 8, t: 8, b: 22 }, now = Date.now(), span = 300000;
+  const series = cfg.drones.map((dc, i) => ({ name: droneName(dc), col: colorOf(droneColor(i)), pts: DS[dc.id] ? DS[dc.id].errs.filter((p) => now - p.t < span) : [] }));
+  const all = series.flatMap((s) => s.pts.map((p) => p.e * uk()));
+  if (!all.length) { emptyChart(ctx, W, H, C, 'Needs radio and GPS from the same drone'); return; }
+  const sorted = [...all].sort((a, b) => a - b), ymax = Math.max(5, sorted[Math.floor(sorted.length * 0.98)] * 1.15);
+  const X = (t) => pad.l + (1 - (now - t) / span) * (W - pad.l - pad.r), Y = (v) => H - pad.b - Math.min(v, ymax) / ymax * (H - pad.t - pad.b);
+  const st = niceStep(ymax); ctx.strokeStyle = C.grid; ctx.fillStyle = C.muted; ctx.font = '11px -apple-system, sans-serif';
+  for (let v = 0; v <= ymax; v += st) { ctx.beginPath(); ctx.moveTo(pad.l, Y(v)); ctx.lineTo(W - pad.r, Y(v)); ctx.stroke(); ctx.fillText(`${+v.toFixed(1)} ${us()}`, 2, Y(v) + 4); }
+  for (let m = 0; m <= 5; m++) ctx.fillText(m ? `-${m}m` : 'now', X(now - m * 60000) - (m ? 10 : 20), H - 5);
+  ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, H - pad.b); ctx.lineTo(W - pad.r, H - pad.b); ctx.stroke();
+  for (const s of series) { if (s.pts.length < 2) continue; ctx.strokeStyle = s.col; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.beginPath();
+    s.pts.forEach((p, k) => k ? ctx.lineTo(X(p.t), Y(p.e * uk())) : ctx.moveTo(X(p.t), Y(p.e * uk()))); ctx.stroke(); }
+  ctx.lineWidth = 1;
+  const tip = $('errTip');
+  if (errHover && errHover.x > pad.l) {
+    const t = now - (1 - (errHover.x - pad.l) / (W - pad.l - pad.r)) * span, rows = [];
+    ctx.strokeStyle = C.muted; ctx.beginPath(); ctx.moveTo(errHover.x, pad.t); ctx.lineTo(errHover.x, H - pad.b); ctx.stroke();
+    for (const s of series) { if (!s.pts.length) continue; let b = s.pts[0]; for (const p of s.pts) if (Math.abs(p.t - t) < Math.abs(b.t - t)) b = p; if (Math.abs(b.t - t) > 5000) continue;
+      ctx.fillStyle = C.card; ctx.beginPath(); ctx.arc(X(b.t), Y(b.e * uk()), 6, 0, 7); ctx.fill(); ctx.fillStyle = s.col; ctx.beginPath(); ctx.arc(X(b.t), Y(b.e * uk()), 4, 0, 7); ctx.fill();
+      rows.push(`<span class="sw dot" style="background:${s.col}"></span> ${esc(s.name)}: <b>${fL(b.e, 2)}</b>`); }
+    if (rows.length) { tip.innerHTML = `${((now - t) / 1000).toFixed(0)} s ago<br>` + rows.join('<br>'); tip.style.display = 'block'; tip.style.left = Math.min(errHover.x + 12, W - tip.offsetWidth - 4) + 'px'; tip.style.top = '6px'; }
+    else tip.style.display = 'none';
+  } else tip.style.display = 'none';
+}
+function drawPlChart() {
+  const c = $('plChart'); if (!c.clientWidth) return;
+  const [W, H] = sizeCanvas(c), ctx = c.getContext('2d'), C = chartC(); ctx.clearRect(0, 0, W, H);
+  const pad = { l: 50, r: 8, t: 8, b: 22 }, pts = plSamples.slice(-3000), cps = calPoints;
+  const ds = [...pts.map((p) => p.d), ...cps.map((p) => p.d)], rs = [...pts.map((p) => p.rssi), ...cps.map((p) => p.rssi)];
+  if (!ds.length) { emptyChart(ctx, W, H, C, 'Needs calibration points or GPS flight data'); return; }
+  let dmin = Infinity, dmax = 0, rmin = Infinity, rmax = -Infinity;
+  ds.forEach((d) => { dmin = Math.min(dmin, d); dmax = Math.max(dmax, d); }); rs.forEach((r) => { rmin = Math.min(rmin, r); rmax = Math.max(rmax, r); });
+  dmin = Math.max(0.3, dmin * 0.8); dmax = Math.max(dmin * 3, dmax * 1.2); rmin -= 4; rmax += 4;
+  const lx0 = Math.log10(dmin), lx1 = Math.log10(dmax);
+  const X = (d) => pad.l + (Math.log10(d) - lx0) / (lx1 - lx0) * (W - pad.l - pad.r), Y = (r) => H - pad.b - (r - rmin) / (rmax - rmin) * (H - pad.t - pad.b);
+  ctx.strokeStyle = C.grid; ctx.fillStyle = C.muted; ctx.font = '11px -apple-system, sans-serif';
+  for (const d of [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]) if (d >= dmin && d <= dmax) { ctx.beginPath(); ctx.moveTo(X(d), pad.t); ctx.lineTo(X(d), H - pad.b); ctx.stroke(); ctx.fillText(`${d} m`, X(d) - 10, H - 5); }
+  const st = niceStep(rmax - rmin);
+  for (let r = Math.ceil(rmin / st) * st; r <= rmax; r += st) { ctx.beginPath(); ctx.moveTo(pad.l, Y(r)); ctx.lineTo(W - pad.r, Y(r)); ctx.stroke(); ctx.fillText(`${r} dBm`, 2, Y(r) + 4); }
+  ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, H - pad.b); ctx.lineTo(W - pad.r, H - pad.b); ctx.stroke();
+  const aIdx = (id) => Math.max(0, cfg.anchors.findIndex((a) => a.id === id));
+  ctx.globalAlpha = 0.35; for (const p of pts) { ctx.fillStyle = colorOf(anchorColor(aIdx(p.anchor))); ctx.fillRect(X(p.d) - 1.5, Y(p.rssi) - 1.5, 3, 3); } ctx.globalAlpha = 1;
+  cfg.anchors.forEach((a, i) => { ctx.strokeStyle = colorOf(anchorColor(i)); ctx.lineWidth = 2; ctx.beginPath();
+    for (let k = 0; k <= 40; k++) { const d = Math.pow(10, lx0 + (lx1 - lx0) * k / 40), r = a.A - 10 * a.n * Math.log10(d); k ? ctx.lineTo(X(d), Y(r)) : ctx.moveTo(X(d), Y(r)); } ctx.stroke(); });
+  for (const p of cps) { ctx.fillStyle = C.card; ctx.beginPath(); ctx.arc(X(p.d), Y(p.rssi), 6, 0, 7); ctx.fill(); ctx.strokeStyle = colorOf(anchorColor(aIdx(p.anchor))); ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(X(p.d), Y(p.rssi), 5, 0, 7); ctx.stroke(); }
+  ctx.lineWidth = 1;
+  const tip = $('plTip');
+  if (plHover) {
+    let best = null, bd = 144;
+    for (const p of [...cps.map((x) => ({ ...x, cal: true })), ...pts]) { const dd = (X(p.d) - plHover.x) ** 2 + (Y(p.rssi) - plHover.y) ** 2; if (dd < bd) { bd = dd; best = p; } }
+    if (best) { const a = cfg.anchors.find((x) => x.id === best.anchor);
+      tip.innerHTML = `<b>Node ${esc(best.anchor)}</b>${best.cal ? ', calibration point' : ''}<br>${best.d.toFixed(2)} m true, ${best.rssi.toFixed(1)} dBm` + (a ? `<br>model says ${rangeFromRssi(best.rssi, a).toFixed(1)} m` : '');
+      tip.style.display = 'block'; tip.style.left = Math.min(plHover.x + 12, W - tip.offsetWidth - 4) + 'px'; tip.style.top = Math.max(4, plHover.y - 30) + 'px'; }
+    else tip.style.display = 'none';
+  } else tip.style.display = 'none';
+}
+function hoverer(id, set, draw) { const c = $(id); c.addEventListener('mousemove', (e) => { const r = c.getBoundingClientRect(); set({ x: e.clientX - r.left, y: e.clientY - r.top }); draw(); }); c.addEventListener('mouseleave', () => { set(null); draw(); }); }
+hoverer('errChart', (v) => { errHover = v; }, drawErrChart);
+hoverer('plChart', (v) => { plHover = v; }, drawPlChart);
+
+// =====================================================================
+// Top bar, steps, hints, tabs, console
+// =====================================================================
+let currentTab = 'setup';
+function showTab(t) {
+  currentTab = t;
+  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
+  document.querySelectorAll('.tabpage').forEach((p) => p.classList.toggle('active', p.id === 'tab-' + t));
+  if (t === 'results') { drawErrChart(); drawPlChart(); renderStats(); }
+  if (t === 'live') renderLive();
+}
+$('tabs').addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b) showTab(b.dataset.tab); });
+function setHint(text, cls, key) { $('hintBar').innerHTML = (key ? `<span class="k">${esc(key)}</span>` : '') + esc(text); $('hintBar').className = cls || ''; }
+function liveDrones() { const now = Date.now(); return cfg.drones.filter((d) => DS[d.id] && now - DS[d.id].lastPkt < 3000); }
+function updateTop() {
+  const nSet = cfg.anchors.filter(isSet).length, rough = cfg.anchors.filter((a) => isSet(a) && a.src === 'laptop' && a.acc > 10).length;
+  const connected = ports.length > 0 || !!sim, live = liveDrones();
+  const s1 = nSet >= 2, s2 = connected;
+  $('step1').className = 'step ' + (s1 ? 'done' : 'now'); $('step1t').textContent = `${nSet} of ${cfg.anchors.length} set${rough ? `, ${rough} rough` : ''}`;
+  $('step2').className = 'step ' + (s2 ? 'done' : s1 ? 'now' : ''); $('step2t').textContent = sim ? 'Demo running' : ports.length ? `${ports.length} board${ports.length > 1 ? 's' : ''}` : 'Not connected';
+  $('step3').className = 'step ' + (trial ? 'now' : s1 && s2 ? 'now' : ''); $('step3t').textContent = trial ? `Recording ${fmtDur(Date.now() - trial.start)}` : trials.length ? `${trials.length} done` : 'Not started';
+  $('connectBtn').textContent = ports.length ? 'Disconnect' : 'Connect receiver'; $('connectBtn').className = ports.length ? '' : 'primary';
+  $('trialBtn').textContent = trial ? `Stop trial  ${fmtDur(Date.now() - trial.start)}` : 'Start trial'; $('trialBtn').className = trial ? 'stop' : 'go';
+  $('simBtn').textContent = sim ? 'Stop demo' : 'Demo';
+  // the one-line "what next" hint
+  if (nodeJob) return setHint(`Setting node ${cfg.anchors[nodeJob.i].id}. Keep the laptop${nodeJob.survey ? ' and GPS' : ''} at the node.`, '', 'Now:');
+  const unset = cfg.anchors.find((a) => !isSet(a));
+  if (nSet < 2 || (unset && !connected)) return setHint(`Go to node ${unset.id} and press "Set node" (or try Demo to see how it works).`, 'warn', 'Next:');
+  if (!connected) return setHint('Plug in the receiver board and press "Connect receiver".', 'warn', 'Next:');
+  if (!live.length) return setHint('Connected. Waiting for radio packets from the drones. Check that the drone payloads are powered.', 'warn', 'Waiting:');
+  const summary = live.map((dc) => { const e = DS[dc.id].est; return `${droneName(dc)} ${e ? '±' + fL(e.sig, 0) : '(need 2 nodes)'}`; }).join(', ');
+  if (!trial) return setHint(`Tracking ${summary}. Press "Start trial" when the drones are flying the path.`, 'ok', 'Ready:');
+  setHint(`${trial.name}: ${summary}. Press "Stop trial" at the end, then "Save data".`, 'ok', 'Recording:');
+}
+const conLines = []; let conDirty = false;
+function logLine(s) { conLines.push(`${new Date().toLocaleTimeString()}  ${s}`); if (conLines.length > 500) conLines.splice(0, conLines.length - 500); conDirty = true; }
+function flushConsole() {
+  if (!conDirty || currentTab !== 'more') return; conDirty = false;
+  const el = $('console'), atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  el.textContent = conLines.join('\n'); if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+// =====================================================================
+// Start up + main loop
+// =====================================================================
+function renderAll() { renderSettings(); renderNodeCards(); renderDroneCards(); renderCalSelects(); renderCalTable(); renderStats(); renderLegends(); syncNodeMarkers(); }
+rebuildGeometry(); renderAll(); setLayer(cfg.layer || 'sat'); setZones(!!cfg.zones);
+$('circlesBtn').classList.toggle('on', !!cfg.circles);
+$('trialName').value = nextTrialName();
+if (cfg.anchors.some(isSet)) flyToNodes();
+updateTop(); updateMapMsg();
+if (cfg.anchors.filter(isSet).length >= 2 && !trial) showTab('setup');
+let tick = 0;
+setInterval(() => {
+  tick++;
+  const safe = (f) => { try { f(); } catch (e) { warnOnce('ui' + e.message, 'Display error: ' + e.message); } };
+  if (nodeJob) safe(jobTick);
+  safe(updateMapLayers);
+  if (tick % 2 === 0) { safe(updateTop); if (currentTab === 'live') safe(renderLive); safe(flushConsole); }
+  if (follow && (sim || ports.length) && Date.now() - lastFollow > 2500) { lastFollow = Date.now(); safe(() => fitAll(true)); }
+  if (tick % 4 === 0 && currentTab === 'results') { safe(drawErrChart); safe(drawPlChart); }
+  if (tick % 8 === 0) {
+    $('dataInfo').textContent = `${fixRows.length} positions, ${rawRows.length} raw lines (${counts.RSSI} signal, ${counts.GPS} GPS, ${counts.IMU} IMU), ${plSamples.length} signal readings with GPS`;
+    if (currentTab === 'results') safe(renderStats);
+  }
+}, 250);
+new ResizeObserver(() => map.invalidateSize()).observe($('mapPane'));
+logLine('[dash] Ready.');
+window.ME74 = { solve2, solveN, toENU, fromENU, makeRef, setRef: (r) => { REF = r; }, fitGroups, handleLine, cfg: () => cfg, DS, fixRows, makeZip, setNode };
+</script>
+</body>
+</html>
