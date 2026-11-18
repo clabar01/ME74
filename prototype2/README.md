@@ -38,7 +38,8 @@ The existing ME74 firmware printout also works with a time in front of each line
 `[IMU] LOG,...`, `[GPS] {...json...}`, and `[LORA] RX from node 1` followed by `[LORA] RSSI: -71 dBm`
 (node 1 = A, node 2 = B). Lines without a drone ID belong to the drone picked for that file.
 
-**Read log from drone** sends `dump` over USB and reads lines until `END` (the firmware needs to support it).
+**Read log from drone** sends `dump` over USB and reads lines until `END`. The firmware for this is in
+[`firmware/`](firmware/README.md): `p2_drone` (logger) and `p2_node` (beacons).
 
 No ESP-NOW: Prototype 2 doesn't use it.
 

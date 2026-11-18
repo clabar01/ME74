@@ -409,7 +409,10 @@
       </div>
       <div class="card">
         <h3>USB console <span class="spacer"></span><label class="row" style="text-transform:none;letter-spacing:0"><input id="showData" type="checkbox"> Show GPS lines</label></h3>
-        <div class="btns" style="margin:0 0 8px"><button class="small" id="connBtn">Connect a board</button><span class="hint" id="connInfo" style="margin:0"></span></div>
+        <div class="btns" style="margin:0 0 8px"><button class="small" id="connBtn">Connect a board</button>
+          <button class="small" id="listBtn" title="Sends list: shows the log files saved on the drone">List logs on drone</button>
+          <button class="small" id="eraseBtn" title="Sends eraseall. Only after the log is safely on the laptop.">Erase logs on drone</button>
+          <span class="hint" id="connInfo" style="margin:0"></span></div>
         <div id="console"></div>
         <div class="btns" style="flex-wrap:nowrap"><input id="cmdIn" placeholder="Send a command to the board"><button id="cmdSend" class="small">Send</button></div>
       </div>
@@ -1691,6 +1694,15 @@ function updateConn() {
   $('gpsConnBtn').textContent = ports.length ? 'GPS board connected' : 'connect GPS board';
 }
 $('connBtn').onclick = () => (ports.length ? [...ports].forEach(closeEntry) : connectSerial());
+let lastDumpOk = null;   // name of the last log read off a drone this session
+$('listBtn').onclick = async () => { if (!ports.length && !(await connectSerial())) return; sendAll('list'); showTab('more'); };
+$('eraseBtn').onclick = async () => {
+  if (!ports.length && !(await connectSerial())) return;
+  const msg = lastDumpOk ? `Erase every log on the drone? The last one read (${lastDumpOk}) is saved on this laptop.`
+                         : 'No log has been read off a drone in this session. Erase every log on the drone anyway? This cannot be undone.';
+  if (!confirm(msg)) return;
+  sendAll('eraseall'); showTab('more');
+};
 $('gpsConnBtn').onclick = () => { if (!ports.length) connectSerial(); };
 $('cmdSend').onclick = () => { const v = $('cmdIn').value.trim(); if (v) { sendAll(v); $('cmdIn').value = ''; } };
 $('cmdIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('cmdSend').click(); });
@@ -1737,6 +1749,8 @@ function finishDump(cancel) {
   const pf = parseLog(name, text);
   if (!pf.lines.length) { setHint('Got text from the drone, but no log lines in it. See More, Log format.', 'bad'); return; }
   loadParsed([pf]);
+  lastDumpOk = name;
+  setHint(`Read ${pf.lines.length.toLocaleString()} lines and saved ${name} to Downloads. Once you've checked it, "Erase logs on drone" (More tab) frees the drone's memory.`, 'ok', 'Done:');
 }
 
 // =====================================================================
