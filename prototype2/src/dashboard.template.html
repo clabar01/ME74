@@ -1,0 +1,2246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ME74 Prototype 2: Flight Replay</title>
+<!--
+  ME74 Prototype 2 flight replay. Open in Chrome or Edge.
+
+  Nothing here is live. During a test the drones run on battery and save their readings to their
+  own memory. Afterwards:
+    1. Set the nodes (done at the field before flying): press "Set node" at each stationary node.
+    2. Load the flight: drag the drones' log files onto the page (one file per drone), or plug a
+       drone in over USB and press "Read log from drone".
+    3. Replay it on the satellite map with the timeline, and compare radio, IMU and radio + IMU
+       positions against GPS in the Results tab.
+
+  Log format (one reading per line, starting with the board's own time in ms):
+    12034,RSSI,A,D1,-67              signal between node A and drone D1 (dBm)
+    12040,GPS,D1,lat,lon,alt_m,sats,hdop,hhmmss.ss   (GPS UTC time lines up the drones' logs)
+    12052,IMU,D1,t_us,ax,ay,az,gx,gy,gz,mx,my,mz,roll,pitch,heading,dt_ms,overruns
+    12060,ALT,D1,height_m
+  The existing ME74 firmware printout also works with a time in front of each line:
+    [IMU] LOG,...   [GPS] {"type":"status",...}   [LORA] RX from node 1 / [LORA] RSSI: -71 dBm
+-->
+<style>/*LEAFLET_CSS*/</style>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #F4F5F7; --card: #FFFFFF; --text: #1B1F24; --muted: #667085; --line: #E2E5EA; --grid: #EEF0F3;
+    --accent: #2563EB; --accent-text: #FFFFFF; --ok: #15803D; --warn: #B45309; --bad: #DC2626;
+    --ok-bg: #E8F5EC; --warn-bg: #FDF3E7; --bad-bg: #FDECEC;
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+    --zone: 124, 58, 237; --console: #0F1115; --console-text: #D6DAE1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #0B0D11; --card: #15181E; --text: #E6E8EB; --muted: #9AA4B2; --line: #272C36; --grid: #1D2129;
+      --accent: #4F8CFF; --accent-text: #0B0D12; --ok: #3FB950; --warn: #E3A008; --bad: #F05252;
+      --ok-bg: #12261A; --warn-bg: #2A2110; --bad-bg: #2C1414;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300;
+      --console: #07090C; --console-text: #C9CED6;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text); display: flex; flex-direction: column;
+         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  button { font: inherit; font-weight: 600; padding: 7px 14px; border-radius: 9px; cursor: pointer;
+           border: 1px solid var(--line); background: var(--card); color: var(--text); white-space: nowrap; }
+  button:hover:not(:disabled) { filter: brightness(0.97); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.go { background: var(--ok); border-color: var(--ok); color: #fff; }
+  button.stop { background: var(--bad); border-color: var(--bad); color: #fff; }
+  button.small { padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+  button.link { border: 0; background: none; color: var(--accent); padding: 2px 4px; }
+  button:disabled { opacity: .45; cursor: default; }
+  input, select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line);
+                  background: var(--bg); color: var(--text); width: 100%; min-width: 0; }
+  input[type=checkbox] { width: auto; }
+  label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); font-weight: 600; }
+  label.row { flex-direction: row; align-items: center; gap: 6px; }
+
+  /* ---------- header + steps ---------- */
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 16px;
+           background: var(--card); border-bottom: 1px solid var(--line); }
+  .brand b { display: block; font-size: 16px; }
+  .brand span { color: var(--muted); font-size: 12px; }
+  .steps { display: flex; gap: 6px; margin-left: 8px; flex-wrap: wrap; }
+  .step { display: flex; align-items: center; gap: 8px; padding: 5px 12px 5px 6px; border-radius: 999px;
+          border: 1px solid var(--line); background: var(--bg); }
+  .step .num { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700;
+               background: var(--line); color: var(--muted); flex: none; }
+  .step b { font-size: 13px; display: block; line-height: 1.2; }
+  .step small { color: var(--muted); font-size: 11px; display: block; line-height: 1.2; }
+  .step.done .num { background: var(--ok); color: #fff; }
+  .step.now { border-color: var(--accent); }
+  .step.now .num { background: var(--accent); color: var(--accent-text); }
+  .spacer { flex: 1; }
+  #hintBar { padding: 8px 16px; font-weight: 600; background: var(--card); border-bottom: 1px solid var(--line); }
+  #hintBar.ok { color: var(--ok); } #hintBar.warn { color: var(--warn); } #hintBar.bad { color: var(--bad); }
+  #hintBar .k { color: var(--muted); font-weight: 600; margin-right: 6px; }
+
+  /* ---------- main layout ---------- */
+  .app { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 410px; }
+  #mapPane { position: relative; min-height: 0; }
+  #map { position: absolute; inset: 0; background: #2b2f36; }
+  aside { border-left: 1px solid var(--line); background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
+  @media (max-width: 1000px) {
+    body { height: auto; } .app { grid-template-columns: 1fr; }
+    #mapPane { height: 62vh; } aside { border-left: 0; }
+  }
+  nav.tabs { display: flex; background: var(--card); border-bottom: 1px solid var(--line); padding: 0 6px; }
+  nav.tabs button { flex: 1; border: 0; border-radius: 0; background: none; padding: 10px 4px; color: var(--muted);
+                    border-bottom: 3px solid transparent; }
+  nav.tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tabpage { display: none; overflow-y: auto; padding: 12px; flex: 1; min-height: 0; }
+  .tabpage.active { display: flex; flex-direction: column; gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+  .card h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+             display: flex; align-items: center; gap: 8px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+  .sw { display: inline-block; width: 12px; height: 12px; flex: none; }
+  .sw.sq { border-radius: 3px; } .sw.dot { border-radius: 50%; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* node + drone cards */
+  .node { display: flex; flex-direction: column; gap: 6px; }
+  .nodeTop { display: flex; align-items: center; gap: 10px; }
+  .badge { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; color: #fff; font-weight: 800;
+           flex: none; background: var(--c); }
+  .badge.round { border-radius: 50%; }
+  .nodeTop .title { flex: 1; min-width: 0; }
+  .nodeTop .title b { display: block; font-size: 15px; }
+  .nodeTop .title span { color: var(--muted); font-size: 12px; }
+  .chip { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+  .chip.none { background: var(--grid); color: var(--muted); }
+  .chip.good { background: var(--ok-bg); color: var(--ok); }
+  .chip.ok { background: var(--grid); color: var(--text); }
+  .chip.rough { background: var(--warn-bg); color: var(--warn); }
+  .chip.bad { background: var(--bad-bg); color: var(--bad); }
+  .chip.good::before { content: "\2713  "; } .chip.rough::before, .chip.bad::before { content: "\26A0\FE0E  "; }
+  .coord { font: 13px ui-monospace, Menlo, monospace; color: var(--text); }
+  .coord.unset { color: var(--muted); font-family: inherit; }
+  .setBtn { flex: 1; padding: 9px 12px; }
+  .msg { font-size: 12px; color: var(--muted); min-height: 0; }
+  .msg.warn { color: var(--warn); }
+  .prog { height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; }
+  .prog > div { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+  details.more { font-size: 13px; }
+  details.more summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 12px; list-style: none; }
+  details.more summary::-webkit-details-marker { display: none; }
+  details.more[open] summary { margin-bottom: 8px; }
+  .addRow { display: flex; gap: 8px; align-items: center; }
+
+  .live { display: flex; flex-direction: column; gap: 6px; }
+  .live .big { font: 600 18px ui-monospace, Menlo, monospace; }
+  .live .sub { color: var(--muted); font-size: 13px; }
+  .imuRow { display: flex; gap: 10px; align-items: center; justify-content: space-between; font-size: 13px; color: var(--muted);
+            border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; }
+  .imuRow b { color: var(--text); }
+  .warnTxt { color: var(--warn); }
+  .sig { display: grid; grid-template-columns: auto auto 1fr auto; gap: 4px 10px; align-items: center; font-size: 13px; margin-top: 4px; }
+  .bars { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; }
+  .bars i { width: 4px; background: var(--line); border-radius: 1px; }
+  .bars i.on { background: var(--text); }
+  .stat { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 2px; }
+  .stat div { font-size: 12px; color: var(--muted); }
+  .stat div b { display: block; font-size: 18px; color: var(--text); }
+  .flags { margin: 4px 0 0; padding: 0; list-style: none; font-size: 12px; }
+  .flags li { color: var(--warn); }
+  .flags li::before { content: "\26A0\FE0E  "; }
+  .state { font-size: 12px; font-weight: 700; }
+  .state.on { color: var(--ok); } .state.off { color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .chartWrap { position: relative; }
+  .chartWrap canvas { display: block; width: 100%; height: 210px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); align-items: center; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .tip { position: absolute; pointer-events: none; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+         padding: 6px 8px; font-size: 12px; display: none; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.15); z-index: 3; }
+  #console { background: var(--console); color: var(--console-text); font: 12px/1.45 ui-monospace, Menlo, monospace;
+             height: 200px; overflow-y: auto; border-radius: 8px; padding: 8px; white-space: pre-wrap; }
+  pre.fmt { font: 12px/1.45 ui-monospace, Menlo, monospace; background: var(--bg); padding: 8px; border-radius: 8px; white-space: pre-wrap; margin: 6px 0; }
+
+  /* ---------- map overlays ---------- */
+  .mapBar { position: absolute; top: 10px; right: 10px; z-index: 500; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%; }
+  .mapBar button { box-shadow: 0 1px 4px rgba(0,0,0,.25); padding: 6px 11px; font-size: 13px; }
+  .mapBar button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .seg { display: inline-flex; border-radius: 9px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+  .seg button { border-radius: 0; box-shadow: none; border: 0; }
+  .mapLegend { position: absolute; left: 10px; bottom: 26px; z-index: 500; background: var(--card); border: 1px solid var(--line);
+               border-radius: 10px; padding: 8px 10px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.25); max-width: 60%; }
+  .mapLegend .legend { color: var(--text); }
+  .mapMsg { position: absolute; left: 50%; top: 58px; transform: translateX(-50%); z-index: 500; background: var(--card);
+            border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px; font-size: 13px; font-weight: 600;
+            box-shadow: 0 1px 4px rgba(0,0,0,.25); display: none; max-width: 50%; text-align: center; }
+  .nodeMk { width: 26px; height: 26px; border-radius: 6px; background: var(--c); border: 2px solid #fff; color: #fff;
+            display: grid; place-items: center; font: 800 13px -apple-system, sans-serif; box-shadow: 0 1px 5px rgba(0,0,0,.5); }
+  .nodeMk.drag { cursor: move; }
+  .droneMk { position: relative; width: 18px; height: 18px; }
+  .droneMk i { position: absolute; inset: 0; border-radius: 50%; background: var(--c); border: 2.5px solid #fff; box-shadow: 0 1px 5px rgba(0,0,0,.5); }
+  .droneMk i.stale { opacity: .4; }
+  .droneMk b { position: absolute; left: 24px; top: -2px; white-space: nowrap; font: 700 12px -apple-system, sans-serif;
+               background: rgba(15,17,21,.82); color: #fff; padding: 2px 7px; border-radius: 6px; }
+  .leaflet-container { font: inherit; }
+  .leaflet-control-attribution { font-size: 10px; }
+</style>
+<style>
+  .timeline { position: absolute; left: 10px; right: 10px; bottom: 24px; z-index: 600; display: none; align-items: center; gap: 10px;
+              background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+  .timeline.show { display: flex; }
+  .timeline input[type=range] { flex: 1; padding: 0; accent-color: var(--accent); border: 0; background: none; }
+  .timeline .tl { font: 600 13px ui-monospace, Menlo, monospace; white-space: nowrap; min-width: 112px; text-align: center; }
+  .timeline select { width: auto; padding: 4px 6px; }
+  #playBtn { width: 46px; padding: 6px 0; font-size: 15px; }
+  .mapLegend { bottom: 84px; }
+  .file { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 13px; display: flex; flex-direction: column; gap: 5px; }
+  .file .fn { font-weight: 700; word-break: break-all; }
+  .file .row2 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+  .file select, .file input { width: auto; padding: 3px 6px; font-size: 12px; }
+  .dropHint { position: fixed; inset: 0; background: rgba(37,99,235,.15); border: 4px dashed var(--accent); z-index: 3000;
+              display: none; place-items: center; font: 700 24px -apple-system, sans-serif; color: var(--accent); pointer-events: none; }
+  .dropHint.show { display: grid; }
+  .empty { text-align: center; padding: 18px 10px; color: var(--muted); font-size: 13px; }
+  .empty b { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
+  .now3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; font-size: 12px; color: var(--muted); }
+  .now3 b { display: block; font-size: 18px; color: var(--text); }
+  .now3 small { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>ME74 Prototype 2</b><span>Flight replay: radio, IMU and GPS logs on a map</span></div>
+  <div class="steps">
+    <div class="step" id="step1"><span class="num">1</span><div><b>Set the nodes</b><small id="step1t"></small></div></div>
+    <div class="step" id="step2"><span class="num">2</span><div><b>Load a flight</b><small id="step2t"></small></div></div>
+    <div class="step" id="step3"><span class="num">3</span><div><b>Replay and compare</b><small id="step3t"></small></div></div>
+  </div>
+  <span class="spacer"></span>
+  <button id="loadBtn" class="primary" title="Pick the log files from one flight, one per drone">Load flight logs</button>
+  <input id="logFiles" type="file" multiple accept=".txt,.csv,.log,text/plain" style="display:none">
+  <button id="readBtn" title="Plug a drone in over USB and copy its saved log">Read log from drone</button>
+  <button id="saveBtn" title="One ZIP with every CSV, the original logs and the setup">Save results</button>
+  <button id="demoBtn" title="Makes a fake 2.5 minute flight so you can see how it works">Demo flight</button>
+</header>
+<div id="hintBar"></div>
+
+<div class="app">
+  <div id="mapPane">
+    <div id="map"></div>
+    <div class="mapBar">
+      <span class="seg"><button id="lySat" class="on">Satellite</button><button id="lyStreet">Streets</button></span>
+      <button id="followBtn" title="Keep the drones in view while it plays">Follow</button>
+      <button id="fitBtn" title="Show the whole flight">Fit</button>
+      <span class="seg" id="trackSeg" title="Which tracks to draw">
+        <button data-track="radio">Radio</button><button data-track="imu">IMU</button><button data-track="fused">Radio+IMU</button><button data-track="gps">GPS</button></span>
+      <button id="trailBtn" title="How much of each track to draw behind the drone">Trail</button>
+      <button id="circlesBtn" title="Distance from each node to each drone">Circles</button>
+      <button id="zonesBtn" title="Where the radio fix should be most accurate">Best zones</button>
+    </div>
+    <div class="mapMsg" id="mapMsg"></div>
+    <div class="mapLegend" id="mapLegend"></div>
+    <div class="timeline" id="timeline">
+      <button id="playBtn" class="primary" title="Play / pause (space bar)">&#9654;</button>
+      <input type="range" id="scrub" min="0" max="1000" step="50" value="0" aria-label="Flight time">
+      <span class="tl" id="tLabel">0:00 / 0:00</span>
+      <select id="speedSel" title="Playback speed"><option value="1">1x</option><option value="4">4x</option><option value="10">10x</option><option value="30">30x</option></select>
+    </div>
+  </div>
+
+  <aside>
+    <nav class="tabs" id="tabs">
+      <button data-tab="setup" class="active">Setup</button>
+      <button data-tab="flight">Flight</button>
+      <button data-tab="results">Results</button>
+      <button data-tab="cal">Calibrate</button>
+      <button data-tab="more">More</button>
+    </nav>
+
+    <!-- SETUP -->
+    <div class="tabpage active" id="tab-setup">
+      <div class="card">
+        <h3>Stationary nodes</h3>
+        <p class="hint" style="margin:0 0 12px">Do this at the field before flying. "Set node" uses the laptop's location, and averages
+          the GPS board too if it's plugged in (<button class="link" id="gpsConnBtn">connect GPS board</button>). You can also drag a node on the map.</p>
+        <div id="nodeList" style="display:flex;flex-direction:column;gap:14px"></div>
+        <div class="addRow" style="margin-top:12px">
+          <button id="addNode" class="small">+ Add node</button>
+          <span class="hint" id="nodeHint" style="margin:0"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Drones</h3>
+        <div id="droneList" style="display:flex;flex-direction:column;gap:14px"></div>
+      </div>
+    </div>
+
+    <!-- FLIGHT -->
+    <div class="tabpage" id="tab-flight">
+      <div class="card">
+        <h3>Flight</h3>
+        <div class="g2">
+          <label>Showing<select id="flightSel"></select></label>
+          <label>Name<input id="flightName"></label>
+        </div>
+        <div id="fileList" style="display:flex;flex-direction:column;gap:8px;margin-top:10px"></div>
+        <div class="btns">
+          <button class="small" id="cropStart" title="Leave out everything before this moment (takeoff)">Analyze from here</button>
+          <button class="small" id="cropEnd" title="Leave out everything after this moment (landing)">Analyze to here</button>
+          <button class="small" id="cropReset">Whole flight</button>
+        </div>
+        <div class="hint" id="cropInfo"></div>
+      </div>
+      <div id="liveCards" style="display:flex;flex-direction:column;gap:12px"></div>
+      <div class="card">
+        <h3>Distance from GPS during this flight</h3>
+        <div class="legend" id="errLegend"></div>
+        <div class="chartWrap"><canvas id="errChart" style="cursor:pointer"></canvas><div class="tip" id="errTip"></div></div>
+        <p class="hint">Click the chart to jump to that moment. Gray = outside the analysis window.</p>
+      </div>
+    </div>
+
+    <!-- RESULTS -->
+    <div class="tabpage" id="tab-results">
+      <div class="card">
+        <h3>Distance from GPS, by flight</h3>
+        <div id="statsTable"></div>
+        <p class="hint">For each method: radio only, IMU only (dead reckoning from where it zeroed), and the two combined.
+          Only flights where the drone also logged GPS get a number. Uses each flight's analysis window.</p>
+      </div>
+      <div class="card">
+        <h3>Signal vs true distance</h3>
+        <div class="legend" id="plLegend"></div>
+        <div class="chartWrap"><canvas id="plChart"></canvas><div class="tip" id="plTip"></div></div>
+        <p class="hint">Dots: signal readings with a GPS fix at the same moment. Rings: calibration points. Lines: the current model
+          for each node. If the dots don't follow the lines, calibrate.</p>
+      </div>
+    </div>
+
+    <!-- CALIBRATE -->
+    <div class="tabpage" id="tab-cal">
+      <div class="card">
+        <h3>Why calibrate</h3>
+        <p class="hint" style="margin:0">Signal strength turns into distance with two numbers per node: the signal at 1 m and how fast it
+          fades (n). They change with the site, so fit them from your own data. Every change recomputes all loaded flights.</p>
+      </div>
+      <div class="card">
+        <h3>Option 1: tape measure</h3>
+        <p class="hint" style="margin:0 0 8px">Before takeoff, leave the drone at a measured distance from a node for about 20 s (try 2, 5,
+          10 and 20 m). After loading the flight, drag the timeline to that moment and press "Use signal here", or type the signal in.</p>
+        <div class="g2">
+          <label>Node<select id="calAnchor"></select></label>
+          <label>Drone<select id="calDrone"></select></label>
+          <label>Distance (m, antenna to antenna)<input id="calDist" type="number" step="0.01" min="0.1" placeholder="5.00"></label>
+          <label>Signal (dBm)<input id="calRssi" type="number" step="0.5" placeholder="-62"></label>
+        </div>
+        <div class="btns"><button id="calHere" class="small">Use signal here</button><button id="calAdd" class="small primary">Add point</button></div>
+        <div id="calText" class="hint"></div>
+        <div id="calTable" style="margin-top:8px"></div>
+        <div class="btns"><button id="fitPts" class="small">Fit from these points</button>
+          <button id="calLink" class="small" title="Uses the nodes' signal from each other at their known distance">Add node-to-node points</button></div>
+      </div>
+      <div class="card">
+        <h3>Option 2: from a GPS flight</h3>
+        <p class="hint" style="margin:0 0 8px">Uses every signal reading that came with a GPS fix, from all loaded flights. Fly at a mix of
+          distances from the nodes.</p>
+        <button id="fitGps" class="small">Fit from GPS flight data</button>
+      </div>
+      <div class="card" id="fitCard" style="display:none">
+        <h3>Fit result</h3>
+        <div id="fitOut"></div>
+      </div>
+    </div>
+
+    <!-- MORE -->
+    <div class="tabpage" id="tab-more">
+      <div class="card">
+        <h3>General</h3>
+        <div class="g2">
+          <label>Units<select id="units"><option value="m">Meters</option><option value="ft">Feet</option></select></label>
+          <label>Baud rate (USB)<select id="baud"><option>115200</option><option>230400</option><option>921600</option><option>57600</option><option>9600</option></select></label>
+          <label>"Set node" GPS averaging (s)<input data-s="surveySecs" type="number" min="5" step="5"></label>
+          <label>"Set node" GPS source<select id="svSrc"><option value="auto">Automatic (not a drone)</option></select></label>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Math settings</h3>
+        <div class="g2">
+          <label>Signal noise (dB, 1&sigma;)<input data-s="sigmaDb" type="number" step="0.5" min="0.5"></label>
+          <label>Median of last N readings<input data-s="winN" type="number" step="1" min="1"></label>
+          <label>Ignore readings older than (s)<input data-s="winSec" type="number" step="0.5" min="0.2"></label>
+          <label>Radio smoothing: accel noise (m/s&sup2;)<input data-s="accelSigma" type="number" step="0.1" min="0.05"></label>
+          <label>IMU noise for radio + IMU (m/s&sup2;)<input data-s="imuSigma" type="number" step="0.1" min="0.05"></label>
+          <div></div>
+        </div>
+        <div class="btns"><label class="row"><input data-s="kalman" type="checkbox"> Smooth the radio track (Kalman filter)</label></div>
+        <div class="btns"><label class="row"><input data-s="fuse" type="checkbox"> Combine IMU with radio</label></div>
+        <details class="more" style="margin-top:8px"><summary>How the math works</summary>
+          <p class="hint"><b>1.</b> Node positions are turned into east/north meters around the first node.</p>
+          <p class="hint"><b>2.</b> Distance from signal: d = 10^((RSSI@1m &minus; RSSI) / (10&middot;n)), using the median of the last N readings.</p>
+          <p class="hint"><b>3.</b> That distance is a slant line up to the drone, so the flight height turns it into a distance along the ground.</p>
+          <p class="hint"><b>4.</b> Two nodes: the two distance circles cross at two mirror-image spots; the drone's side setting picks one and it follows the track from there.
+            Three or more nodes: least squares, no mirror problem.</p>
+          <p class="hint"><b>5.</b> IMU only: the same dead reckoning as ME74_dashboard_2D.html (gravity removed, integrated twice, velocity reset when still,
+            each move's drift taken out when it stops), turned to compass directions with the nose setting.</p>
+          <p class="hint"><b>6.</b> Radio + IMU: a Kalman filter where the IMU acceleration predicts the motion and each radio fix corrects it.</p>
+        </details>
+      </div>
+      <div class="card">
+        <h3>Data</h3>
+        <div id="dataInfo" class="hint" style="margin:0 0 6px"></div>
+        <div class="btns">
+          <button id="saveSetup" class="small">Export setup</button>
+          <button id="loadSetup" class="small">Import setup</button>
+          <input id="setupFile" type="file" accept=".json,application/json" style="display:none">
+          <button id="removeFlight" class="small">Remove this flight</button>
+          <button id="clearFlights" class="small" style="color:var(--bad)">Remove all flights</button>
+        </div>
+        <p class="hint">Nodes, drone settings and calibration stay saved in this browser. Flights don't, so load the logs again after
+          reloading the page (Save results keeps a copy of them in the ZIP).</p>
+      </div>
+      <div class="card">
+        <h3>USB console <span class="spacer"></span><label class="row" style="text-transform:none;letter-spacing:0"><input id="showData" type="checkbox"> Show GPS lines</label></h3>
+        <div class="btns" style="margin:0 0 8px"><button class="small" id="connBtn">Connect a board</button>
+          <button class="small" id="listBtn" title="Sends list: shows the log files saved on the drone">List logs on drone</button>
+          <button class="small" id="eraseBtn" title="Sends eraseall. Only after the log is safely on the laptop.">Erase logs on drone</button>
+          <span class="hint" id="connInfo" style="margin:0"></span></div>
+        <div id="console"></div>
+        <div class="btns" style="flex-wrap:nowrap"><input id="cmdIn" placeholder="Send a command to the board"><button id="cmdSend" class="small">Send</button></div>
+      </div>
+      <div class="card">
+        <h3>Log format</h3>
+        <p class="hint" style="margin:0">Each drone saves one reading per line to its memory, starting with its own time in ms:</p>
+<pre class="fmt">12034,RSSI,A,D1,-67      signal between node A and drone D1
+12040,GPS,D1,42.4075120,-71.1190400,21.4,9,0.9,153012.00
+12052,IMU,D1,t_us,ax,ay,az,gx,gy,gz,mx,my,mz,roll,pitch,heading,dt_ms,overruns
+12060,ALT,D1,8.2         height above takeoff (m)</pre>
+        <p class="hint">The last GPS field is the GPS's UTC time (hhmmss.ss). It lines the two drones' logs up; without it, logs start together
+          and you can shift them by hand. The existing ME74 firmware printout also works with a time in front of each line:
+          <code>[IMU] LOG,...</code>, <code>[GPS] {...}</code>, and <code>[LORA] RX from node 1</code> followed by <code>[LORA] RSSI: -71 dBm</code>
+          (node 1 = A, node 2 = B). "Read log from drone" sends <code>dump</code> and reads lines until <code>END</code>.</p>
+      </div>
+    </div>
+  </aside>
+</div>
+<div class="dropHint" id="dropHint">Drop the flight's log files</div>
+<script>/*LEAFLET_JS*/</script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const D2R = Math.PI / 180, R2D = 180 / Math.PI, FT = 0.3048;
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = (v, d = 1) => (v == null || !Number.isFinite(v)) ? '--' : v.toFixed(d);
+const median = (a) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+const gauss = () => { let u = 0; while (!u) u = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random()); };
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const MAX_ANCHORS = 4;
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const anchorColor = (i) => `var(--s${3 + i})`;
+const droneColor = (i) => `var(--s${1 + i})`;
+const colorOf = (v) => v.startsWith('var(') ? cssVar(v.slice(4, -1)) : v;
+
+
+// Logs are processed with a virtual clock: NOW() is the time of the log line being read, not the computer's time.
+let CLOCK = 0;
+const NOW = () => CLOCK;
+const fmtT = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+function idxAt(arr, t) { let lo = 0, hi = arr.length - 1, r = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (arr[m].t <= t) { r = m; lo = m + 1; } else hi = m - 1; } return r; }
+
+// =====================================================================
+// Config (saved in this browser)
+// =====================================================================
+const DEFAULT_CFG = {
+  units: 'm',
+  anchors: [
+    { id: 'A', lat: null, lon: null, elev: 0, antH: 0.91, A: -45, n: 2.0, src: 'none', acc: null },
+    { id: 'B', lat: null, lon: null, elev: 0, antH: 0.91, A: -45, n: 2.0, src: 'none', acc: null },
+  ],
+  drones: [
+    { id: 'D1', name: 'Typhoon G', altMode: 'fixed', alt: 10, side: 'auto+', noseRef: 'node:B', noseDeg: 0 },
+    { id: 'D2', name: 'Contixo F28', altMode: 'fixed', alt: 10, side: 'auto+', noseRef: 'node:B', noseDeg: 0 },
+  ],
+  fuse: true, imuSigma: 0.5, imuFeed: { IMU: 'D1', IMU2: 'D2' }, tracks: { radio: true, imu: true, fused: true, gps: true },
+  sigmaDb: 4, winN: 5, winSec: 3, kalman: true, accelSigma: 1.5, simNoise: 4,
+  surveySecs: 30, trail: 30, circles: false, zones: false, layer: 'sat', speed: 4,
+};
+function mergeCfg(o) {
+  const c = clone(DEFAULT_CFG);
+  if (o && typeof o === 'object') Object.assign(c, o);
+  if (!Array.isArray(c.anchors) || c.anchors.length < 2) c.anchors = clone(DEFAULT_CFG.anchors);
+  c.anchors = c.anchors.slice(0, MAX_ANCHORS).map((a, i) => ({ ...clone(DEFAULT_CFG.anchors[Math.min(i, 1)]), id: String.fromCharCode(65 + i), ...a }));
+  for (const a of c.anchors) if (!a.src) a.src = Number.isFinite(a.lat) ? 'typed' : 'none';
+  if (!Array.isArray(c.drones) || c.drones.length !== 2) c.drones = clone(DEFAULT_CFG.drones);
+  c.drones = c.drones.map((d, i) => ({ ...clone(DEFAULT_CFG.drones[i]), ...d }));
+  c.tracks = { ...DEFAULT_CFG.tracks, ...(c.tracks || {}) }; c.imuFeed = { ...DEFAULT_CFG.imuFeed, ...(c.imuFeed || {}) };
+  return c;
+}
+function loadCfg() {
+  try {
+    const s = localStorage.getItem('me74_p2_cfg_v2'); if (s) return mergeCfg(JSON.parse(s));
+    const old = localStorage.getItem('me74_p2_cfg');   // carry over node positions from the first version
+    if (old) { const o = JSON.parse(old); return mergeCfg({ anchors: o.anchors, sigmaDb: o.sigmaDb, winN: o.winN, winSec: o.winSec }); }
+  } catch (e) {}
+  return clone(DEFAULT_CFG);
+}
+function saveCfg() { try { localStorage.setItem('me74_p2_cfg_v2', JSON.stringify(cfg)); } catch (e) {} }
+let cfg = loadCfg();
+const isSet = (a) => Number.isFinite(a.lat) && Number.isFinite(a.lon);
+const droneName = (dc) => dc.name || dc.id;
+// Lengths in the chosen unit
+const uk = () => (cfg.units === 'ft' ? 1 / FT : 1);
+const us = () => (cfg.units === 'ft' ? 'ft' : 'm');
+const fL = (m, d = 1) => (m == null || !Number.isFinite(m)) ? '--' : `${(m * uk()).toFixed(d)} ${us()}`;
+const toDisp = (m) => (m == null || !Number.isFinite(m)) ? '' : +(m * uk()).toFixed(2);
+const fromDisp = (v) => v / uk();
+
+// =====================================================================
+// Geodesy: WGS84 lat/lon/h <-> ECEF <-> local east/north/up around node 1
+// =====================================================================
+const WA = 6378137, WF = 1 / 298.257223563, WE2 = WF * (2 - WF);
+function geo2ecef(lat, lon, h) {
+  const p = lat * D2R, l = lon * D2R, s = Math.sin(p), c = Math.cos(p), N = WA / Math.sqrt(1 - WE2 * s * s);
+  return [(N + h) * c * Math.cos(l), (N + h) * c * Math.sin(l), (N * (1 - WE2) + h) * s];
+}
+function ecef2geo(x, y, z) {
+  const lon = Math.atan2(y, x), p = Math.hypot(x, y);
+  let lat = Math.atan2(z, p * (1 - WE2)), h = 0;
+  for (let i = 0; i < 8; i++) { const s = Math.sin(lat), N = WA / Math.sqrt(1 - WE2 * s * s); h = p / Math.cos(lat) - N; lat = Math.atan2(z, p * (1 - WE2 * N / (N + h))); }
+  return [lat * R2D, lon * R2D, h];
+}
+let REF = null;
+function makeRef(lat, lon, h) { const p = lat * D2R, l = lon * D2R; return { lat, lon, h, o: geo2ecef(lat, lon, h), sp: Math.sin(p), cp: Math.cos(p), sl: Math.sin(l), cl: Math.cos(l) }; }
+function toENU(lat, lon, h) {
+  const r = REF, q = geo2ecef(lat, lon, h), dx = q[0] - r.o[0], dy = q[1] - r.o[1], dz = q[2] - r.o[2];
+  return [-r.sl * dx + r.cl * dy, -r.sp * r.cl * dx - r.sp * r.sl * dy + r.cp * dz, r.cp * r.cl * dx + r.cp * r.sl * dy + r.sp * dz];
+}
+function fromENU(e, n, u) {
+  const r = REF;
+  const dx = -r.sl * e - r.sp * r.cl * n + r.cp * r.cl * u, dy = r.cl * e - r.sp * r.sl * n + r.cp * r.sl * u, dz = r.cp * n + r.sp * u;
+  return ecef2geo(r.o[0] + dx, r.o[1] + dy, r.o[2] + dz);
+}
+
+// =====================================================================
+// Node geometry
+// =====================================================================
+let GA = [], BASE = null, refKey = '';
+const compass = (b) => ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'][Math.round(b / 45) % 8];
+function rebuildGeometry() {
+  const valid = cfg.anchors.map((a, i) => ({ ...a, idx: i })).filter(isSet);
+  if (!valid.length) { REF = null; GA = []; BASE = null; refKey = ''; return; }
+  const a0 = valid[0], key = [a0.lat, a0.lon, a0.elev].join(',');
+  REF = makeRef(a0.lat, a0.lon, a0.elev || 0);
+  if (key !== refKey) { if (refKey) resetTracks(); refKey = key; }
+  GA = valid.map((a) => ({ ...a, p: toENU(a.lat, a.lon, (a.elev || 0) + (a.antH || 0)) }));
+  BASE = null;
+  if (GA.length >= 2) {
+    const a = GA[0].p, b = GA[1].p, dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
+    if (L > 0.01) {
+      const ux = [dx / L, dy / L], uy = [-ux[1], ux[0]], nb = (Math.atan2(uy[0], uy[1]) * R2D + 360) % 360;
+      BASE = { L, ux, uy, plusName: compass(nb), minusName: compass((nb + 180) % 360), a: GA[0].id, b: GA[1].id };
+    }
+  }
+}
+// median of k packets: noise shrinks by about 1.25/sqrt(k)
+const rangeFromRssi = (rssi, a) => Math.pow(10, (a.A - rssi) / (10 * a.n));
+const rangeSigma = (d, a, k = 1) => d * Math.LN10 * cfg.sigmaDb * (k > 1 ? 1.25 / Math.sqrt(k) : 1) / (10 * a.n);
+
+// =====================================================================
+// Drone state
+// =====================================================================
+const DS = {};
+function dstate(id) {
+  if (!DS[id]) DS[id] = { rssi: {}, kf: null, est: null, fix: null, meas: [], track: [], gps: null, gpsTrack: [],
+                          altMsg: null, errs: [], flags: [], lastPkt: 0, imuCount: 0, pending: false,
+                          nav: null, imuT: 0, imuPos: null, imuStart: null, fk: null, fusedEst: null, fusedTrack: [] };
+  return DS[id];
+}
+const droneIdx = (id) => cfg.drones.findIndex((d) => d.id === id);
+function resetTracks() { for (const d of Object.values(DS)) { d.kf = null; d.est = null; d.fix = null; d.track = []; d.gpsTrack = []; d.errs = []; d.gps = null;
+  d.nav = null; d.imuPos = null; d.imuStart = null; d.fk = null; d.fusedEst = null; d.fusedTrack = []; } }
+function droneU(dc, d) {
+  const now = NOW();
+  if (dc.altMode === 'gps') {
+    if (d.gps && d.gps.p && d.gps.alt != null && now - d.gps.t < 5000) return { u: d.gps.p[2], src: 'GPS altitude' };
+    return { u: dc.alt, src: 'set height', fallback: true };
+  }
+  if (dc.altMode === 'msg') {
+    if (d.altMsg && now - d.altMsg.t < 5000) return { u: d.altMsg.v, src: 'ALT messages' };
+    return { u: dc.alt, src: 'set height', fallback: true };
+  }
+  return { u: dc.alt, src: 'set height' };
+}
+
+// =====================================================================
+// Position solvers
+// =====================================================================
+const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
+function solve2(ms, side, pred, flags, lastSide) {
+  const A = ms[0], B = ms[1], pa = A.a.p, pb = B.a.p;
+  const dx = pb[0] - pa[0], dy = pb[1] - pa[1], L = Math.hypot(dx, dy);
+  if (L < 0.5) { flags.push('The two nodes are less than 0.5 m apart'); return null; }
+  const ux = [dx / L, dy / L], uy = [-ux[1], ux[0]], rA = A.rh, rB = B.rh;
+  const x = (rA * rA - rB * rB + L * L) / (2 * L), h2 = rA * rA - x * x, ok = h2 >= 0, h = ok ? Math.sqrt(h2) : 0;
+  if (!ok) flags.push("Distance circles don't cross, using the closest point on the node line");
+  const bx = pa[0] + x * ux[0], by = pa[1] + x * ux[1];
+  const c1 = [bx + h * uy[0], by + h * uy[1]], c2 = [bx - h * uy[0], by - h * uy[1]];
+  const nrm = BASE ? BASE.uy : uy, s = (c) => (c[0] - pa[0]) * nrm[0] + (c[1] - pa[1]) * nrm[1];
+  const plus = s(c1) >= s(c2) ? c1 : c2, minus = plus === c1 ? c2 : c1;
+  let pick;
+  if (side === '+') pick = plus;
+  else if (side === '-') pick = minus;
+  else if (lastSide && ok && h > 3) pick = lastSide === '+' ? plus : minus;   // only switch sides when the two spots nearly meet (crossing the line)
+  else if (pred) pick = dist2(plus, pred) <= dist2(minus, pred) ? plus : minus;
+  else { pick = side === 'auto-' ? minus : plus; flags.push(`No track yet, assuming the ${BASE ? (side === 'auto-' ? BASE.minusName : BASE.plusName) : ''} side of the node line`); }
+  if (ok && h < 2) flags.push('Close to the line between the nodes, the side could flip');
+  return { x: pick[0], y: pick[1], alt: pick === plus ? minus : plus, ok, side: pick === plus ? '+' : '-' };
+}
+function solveN(ms, pred, flags) {
+  const W = ms.map((m) => 1 / (m.sh * m.sh));
+  const cost = (p) => ms.reduce((s, m, i) => { const r = Math.hypot(p[0] - m.a.p[0], p[1] - m.a.p[1]) - m.rh; return s + W[i] * r * r; }, 0);
+  const cx = mean(ms.map((m) => m.a.p[0])), cy = mean(ms.map((m) => m.a.p[1]));
+  const starts = [[cx + 1, cy + 1], [cx + 15, cy + 15], [cx - 15, cy - 15]]; if (pred) starts.unshift(pred.slice());
+  let best = null;
+  for (const s0 of starts) {
+    const p = s0.slice();
+    for (let it = 0; it < 30; it++) {
+      let a11 = 0, a12 = 0, a22 = 0, b1 = 0, b2 = 0;
+      ms.forEach((m, i) => {
+        const dx = p[0] - m.a.p[0], dy = p[1] - m.a.p[1], r = Math.hypot(dx, dy) || 1e-3, jx = dx / r, jy = dy / r, res = r - m.rh;
+        a11 += W[i] * jx * jx; a12 += W[i] * jx * jy; a22 += W[i] * jy * jy; b1 -= W[i] * jx * res; b2 -= W[i] * jy * res;
+      });
+      const det = a11 * a22 - a12 * a12; if (Math.abs(det) < 1e-15) break;
+      let d1 = (a22 * b1 - a12 * b2) / det, d2 = (a11 * b2 - a12 * b1) / det;
+      const step = Math.hypot(d1, d2); if (step > 50) { d1 *= 50 / step; d2 *= 50 / step; }
+      p[0] += d1; p[1] += d2; if (step < 1e-3) break;
+    }
+    const c = cost(p); if (!best || c < best.c) best = { p, c };
+  }
+  const nrms = Math.sqrt(best.c / ms.length);
+  if (nrms > 3) flags.push('The distances disagree with each other');
+  return { x: best.p[0], y: best.p[1], alt: null, ok: nrms <= 3, side: '' };
+}
+function posCov(ms, x, y, inflate) {
+  let a11 = 0, a12 = 0, a22 = 0;
+  for (const m of ms) {
+    const dx = x - m.a.p[0], dy = y - m.a.p[1], r = Math.hypot(dx, dy); if (r < 0.05) continue;
+    const jx = dx / r, jy = dy / r, w = 1 / (m.sh * m.sh); a11 += w * jx * jx; a12 += w * jx * jy; a22 += w * jy * jy;
+  }
+  const BIG = 1e4, det = a11 * a22 - a12 * a12;
+  if (!(det > 1e-12)) return [[BIG, 0], [0, BIG]];
+  const c = [[a22 / det * inflate, -a12 / det * inflate], [-a12 / det * inflate, a11 / det * inflate]];
+  if (c[0][0] > BIG || c[1][1] > BIG) { const k = BIG / Math.max(c[0][0], c[1][1]); c.forEach((r) => { r[0] *= k; r[1] *= k; }); }
+  return c;
+}
+
+// =====================================================================
+// Kalman filter (2D constant velocity)
+// =====================================================================
+const mm = (A, B) => A.map((r) => B[0].map((_, j) => r.reduce((s, v, k) => s + v * B[k][j], 0)));
+const tr = (A) => A[0].map((_, j) => A.map((r) => r[j]));
+const madd = (A, B) => A.map((r, i) => r.map((v, j) => v + B[i][j]));
+const Fm = (dt) => [[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]];
+function Qm(dt, sig = cfg.accelSigma) { const q = sig ** 2, a = dt ** 4 / 4 * q, b = dt ** 3 / 2 * q, c = dt * dt * q; return [[a, 0, b, 0], [0, a, 0, b], [b, 0, c, 0], [0, b, 0, c]]; }
+function kfPredictPos(d, now) {
+  if (!cfg.kalman || !d.kf || now - d.kf.t > 10000) return null;
+  const dt = Math.min((now - d.kf.t) / 1000, 5); return [d.kf.x[0] + d.kf.x[2] * dt, d.kf.x[1] + d.kf.x[3] * dt];
+}
+function kfUpdate(d, now, z, R) {
+  if (!d.kf || now - d.kf.t > 10000) { d.kf = { t: now, x: [z[0], z[1], 0, 0], P: [[R[0][0], R[0][1], 0, 0], [R[1][0], R[1][1], 0, 0], [0, 0, 25, 0], [0, 0, 0, 25]] }; return; }
+  const dt = Math.max(0.01, (now - d.kf.t) / 1000), F = Fm(dt);
+  let x = mm(F, d.kf.x.map((v) => [v])).map((r) => r[0]);
+  let P = madd(mm(mm(F, d.kf.P), tr(F)), Qm(dt));
+  const S = [[P[0][0] + R[0][0], P[0][1] + R[0][1]], [P[1][0] + R[1][0], P[1][1] + R[1][1]]], det = S[0][0] * S[1][1] - S[0][1] * S[1][0];
+  if (!(Math.abs(det) > 1e-12)) { d.kf = { t: now, x, P }; return; }
+  const Si = [[S[1][1] / det, -S[0][1] / det], [-S[1][0] / det, S[0][0] / det]], K = mm(P.map((r) => [r[0], r[1]]), Si);
+  const y = [z[0] - x[0], z[1] - x[1]];
+  x = x.map((v, i) => v + K[i][0] * y[0] + K[i][1] * y[1]);
+  P = mm(K.map((r, i) => [r[0], r[1], 0, 0].map((v, j) => (i === j ? 1 : 0) - v)), P);
+  for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) { const m = (P[i][j] + P[j][i]) / 2; P[i][j] = P[j][i] = m; }
+  d.kf = { t: now, x, P };
+}
+
+// Fused filter (radio + IMU): IMU acceleration drives the prediction, radio fixes and stillness correct it
+function kfPredictAccel(kf, dt, aE, aN) {
+  const F = Fm(dt), x = kf.x;
+  kf.x = [x[0] + x[2] * dt + 0.5 * aE * dt * dt, x[1] + x[3] * dt + 0.5 * aN * dt * dt, x[2] + aE * dt, x[3] + aN * dt];
+  kf.P = madd(mm(mm(F, kf.P), tr(F)), Qm(dt, cfg.imuSigma));
+}
+function kfMeasure(kf, H, z, R) {
+  const PHt = mm(kf.P, tr(H)), S = madd(mm(H, PHt), R), det = S[0][0] * S[1][1] - S[0][1] * S[1][0];
+  if (!(Math.abs(det) > 1e-15)) return;
+  const Si = [[S[1][1] / det, -S[0][1] / det], [-S[1][0] / det, S[0][0] / det]], K = mm(PHt, Si);
+  const hx = H.map((r) => r.reduce((s, v, j) => s + v * kf.x[j], 0)), y = [z[0] - hx[0], z[1] - hx[1]];
+  kf.x = kf.x.map((v, i) => v + K[i][0] * y[0] + K[i][1] * y[1]);
+  kf.P = mm(mm(K, H).map((r, i) => r.map((v, j) => (i === j ? 1 : 0) - v)), kf.P);
+  for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) { const m = (kf.P[i][j] + kf.P[j][i]) / 2; kf.P[i][j] = kf.P[j][i] = m; }
+}
+const sigOf = (P) => { const t = P[0][0] + P[1][1], d = P[0][0] * P[1][1] - P[0][1] * P[1][0]; return Math.sqrt(Math.max(0, t / 2 + Math.sqrt(Math.max(0, t * t / 4 - d)))); };
+
+// =====================================================================
+// IMU dead reckoning, ported from ME74_dashboard_2D.html (same thresholds and drift fix)
+// =====================================================================
+// Integrates horizontal acceleration (gravity removed, in world axes) twice.
+//  * "Still" = over the last 0.2 s the total acceleration varies by < 0.4 m/s^2, the
+//    gravity-removed acceleration stays < 0.5 m/s^2 and the gyro stays < 0.15 rad/s. While still, velocity is exactly zero.
+//  * When a move ends, whatever velocity is left is integration error. It is assumed to have
+//    built up linearly during the move, so the move's position (and its track) is corrected by v_end*T/2.
+//  * Zero waits until the IMU is still, so the start point is never taken mid-motion.
+// Zero frame: +X = where the sensor's X axis (the drone's nose) pointed at zero, +Y = 90 degrees to its left.
+// On the map that frame is turned to compass directions using the nose setting for each drone.
+const DEG = 180 / Math.PI, G0 = 9.80665;
+const ZUPT = { WIN_S: 0.2, ACC_RANGE: 0.4, GYRO_MAX: 0.15, LIN_MAX: 0.5, DEADBAND: 0.05, ARM_STILL_S: 0.3, LONG_MOVE_S: 5, TILT_WARN_DEG: 15 };
+const makeNav = () => ({ vx: 0, vy: 0, px: 0, py: 0, traveled: 0, speed: 0, lastT: null, active: false, armed: false,
+                         isStill: false, stillFor: 0, win: [], seg: null, moves: 0, h0: 0, path: [], lastPathT: -1, maxTilt: 0, lastFix: null });
+function toZero(nav, px, py) { const h = nav.h0 / DEG, c = Math.cos(h), s = Math.sin(h); return [px * c - py * s, px * s + py * c]; }
+function navXY(nav) { const [x, y] = toZero(nav, nav.px, nav.py); return { x, y, net: Math.hypot(x, y) }; }
+const navPath = (nav) => nav.path.map((p) => toZero(nav, p[0], p[1]));
+function pathPoint(nav, tSec) {
+  const last = nav.path[nav.path.length - 1];
+  if (last) nav.traveled += Math.hypot(nav.px - last[0], nav.py - last[1]);
+  nav.path.push([nav.px, nav.py, tSec, CLOCK]);
+  if (nav.path.length > 200000) nav.path.splice(0, nav.path.length - 200000);
+}
+function navStart(nav, heading, tSec) {
+  Object.assign(nav, { vx: 0, vy: 0, px: 0, py: 0, traveled: 0, speed: 0, active: true, armed: false, seg: null,
+                       moves: 0, h0: heading ?? 0, path: [[0, 0, tSec, CLOCK]], lastPathT: tSec, maxTilt: 0, lastFix: null });
+}
+function navUpdate(nav, wx, wy, total, lin, gyroMag, heading, tilt, tSec) {
+  nav.win.push([tSec, total, gyroMag, lin]);
+  while (nav.win.length && nav.win[0][0] < tSec - ZUPT.WIN_S) nav.win.shift();
+  let lo = Infinity, hi = -Infinity, g = 0, l = 0;
+  for (const [, t, gm, li] of nav.win) { lo = Math.min(lo, t); hi = Math.max(hi, t); l = Math.max(l, li); if (gm != null) g = Math.max(g, gm); }
+  const still = hi - lo < ZUPT.ACC_RANGE && l < ZUPT.LIN_MAX && g < ZUPT.GYRO_MAX;
+  nav.isStill = still;
+  if (nav.lastT === null || tSec <= nav.lastT || tSec - nav.lastT > 0.25) { nav.lastT = tSec; nav.stillFor = 0; return; }
+  const dt = tSec - nav.lastT;
+  nav.lastT = tSec;
+  nav.stillFor = still ? nav.stillFor + dt : 0;
+  if (nav.armed) { if (nav.stillFor >= ZUPT.ARM_STILL_S) navStart(nav, heading, tSec); return; }
+  if (!nav.active) return;
+  if (still) {
+    if (nav.seg) {                       // a move just ended: remove the velocity drift from it
+      const T = tSec - nav.seg.t0, ex = nav.vx, ey = nav.vy;
+      if (T > 0) {
+        nav.px -= ex * T / 2; nav.py -= ey * T / 2;
+        let i = nav.path.length - 1;
+        while (i >= 0 && nav.path[i][2] >= nav.seg.t0) {
+          const tau = nav.path[i][2] - nav.seg.t0;
+          nav.path[i][0] -= ex * tau * tau / (2 * T); nav.path[i][1] -= ey * tau * tau / (2 * T);
+          i--;
+        }
+        nav.traveled = nav.seg.trav0;
+        for (let k = Math.max(i + 1, 1); k < nav.path.length; k++)
+          nav.traveled += Math.hypot(nav.path[k][0] - nav.path[k - 1][0], nav.path[k][1] - nav.path[k - 1][1]);
+      }
+      nav.lastFix = { T, err: Math.hypot(ex, ey) * T / 2, tilt: nav.seg.tilt };
+      nav.moves++;
+      nav.seg = null;
+      pathPoint(nav, tSec); nav.lastPathT = tSec;
+    }
+    nav.vx = nav.vy = nav.speed = 0;
+    return;
+  }
+  if (!nav.seg) nav.seg = { t0: tSec - dt, trav0: nav.traveled, tilt: 0 };
+  nav.seg.tilt = Math.max(nav.seg.tilt, tilt);
+  let ax = wx, ay = wy;
+  if (Math.hypot(ax, ay) < ZUPT.DEADBAND) { ax = 0; ay = 0; }
+  nav.vx += ax * dt; nav.vy += ay * dt;
+  nav.px += nav.vx * dt; nav.py += nav.vy * dt;
+  nav.speed = Math.hypot(nav.vx, nav.vy);
+  if (tSec - nav.lastPathT >= 0.1) { nav.lastPathT = tSec; pathPoint(nav, tSec); }
+}
+function navZero(nav) { Object.assign(nav, { armed: true, active: false, seg: null, path: [], traveled: 0, px: 0, py: 0, vx: 0, vy: 0, speed: 0 }); }
+function navHint(nav) {
+  if (nav.armed) return 'Zeroing: waiting for the drone to sit still';
+  if (!nav.active) return '';
+  if (nav.seg) {
+    const T = nav.lastT - nav.seg.t0;
+    if (nav.seg.tilt > ZUPT.TILT_WARN_DEG) return `Tilted ${nav.seg.tilt.toFixed(0)}\u00B0 in this move, so gravity leaks into the track`;
+    if (T > ZUPT.LONG_MOVE_S) return `Moving ${T.toFixed(0)} s without a stop: IMU drift is growing`;
+  }
+  return '';
+}
+// Sensor -> world rotation (same convention as the firmware), for gravity removal. World x = north (of the gyro heading), y = west.
+function motionAccel(ax, ay, az, roll, pitch, heading) {
+  const f = roll / DEG, th = pitch / DEG, ps = -heading / DEG;
+  const cf = Math.cos(f), sf = Math.sin(f), ct = Math.cos(th), st = Math.sin(th), cp = Math.cos(ps), sp = Math.sin(ps);
+  const wx = cp * ct * ax + (cp * st * sf - sp * cf) * ay + (cp * st * cf + sp * sf) * az;
+  const wy = sp * ct * ax + (sp * st * sf + cp * cf) * ay + (sp * st * cf - cp * sf) * az;
+  const wz = -st * ax + ct * sf * ay + ct * cf * az - G0;
+  return { total: Math.hypot(ax, ay, az), lin: Math.hypot(wx, wy, wz), hor: Math.hypot(wx, wy), ver: wz, wx, wy };
+}
+// Zero frame (X = nose at zero, Y = left) -> east/north, given the nose's compass bearing B (radians)
+const zeroToENU = (B, X, Y) => [X * Math.sin(B) - Y * Math.cos(B), X * Math.cos(B) + Y * Math.sin(B)];
+const imuFresh = (d, ms = 1500) => !!(d && d.imuT && NOW() - d.imuT < ms);
+function noseBearing(dc, start) {
+  if (dc.noseRef && dc.noseRef.startsWith('node:') && start) {
+    const a = GA.find((x) => x.id === dc.noseRef.slice(5));
+    if (a) { const dE = a.p[0] - start[0], dN = a.p[1] - start[1]; if (Math.hypot(dE, dN) > 1) return Math.atan2(dE, dN); }
+  }
+  return (Number(dc.noseDeg) || 0) * D2R;
+}
+function armImu(id) { const d = dstate(id); d.nav = d.nav || makeNav(); navZero(d.nav); d.imuStart = null; d.imuPos = null; d.fk = null; d.fusedEst = null; d.fusedTrack = []; }
+function onImuStart(id, d) {
+  const dc = cfg.drones[droneIdx(id)], now = NOW();
+  let start = null, v0 = 400, from = 'unknown';
+  if (d.gps && d.gps.p && now - d.gps.t < 2500) { start = [d.gps.p[0], d.gps.p[1]]; v0 = 4; from = 'GPS'; }
+  else if (d.est && now - d.est.t < 3000) { start = [d.est.x, d.est.y]; v0 = Math.max(4, d.est.sig ** 2); from = 'radio'; }
+  if (!start) start = [0, 0];
+  const B = noseBearing(dc, start);
+  d.imuStart = { e: start[0], n: start[1], B, from, t: now };
+  d.fk = { x: [start[0], start[1], 0, 0], P: [[v0, 0, 0, 0], [0, v0, 0, 0], [0, 0, 0.01, 0], [0, 0, 0, 0.01]], wall: now, imuT: null };
+  d.fusedTrack = [];
+  if (curFlight) curFlight.notes.push(`${droneName(dc)} IMU zeroed at its ${from === 'unknown' ? 'node ' + (GA[0] ? GA[0].id : '') + ' (no GPS or radio position yet)' : from} position, nose ${Math.round((B * R2D + 360) % 360)}\u00B0 from north, ${fmtT(now - curFlight.t0)} into the flight`);
+}
+let imuRows = [];
+function onImuLine(id, body) {
+  if (droneIdx(id) < 0) return;
+  const d = dstate(id), now = NOW(), dc = cfg.drones[droneIdx(id)];
+  let ax, ay, az, roll, pitch, heading, raw, gyroMag = null, tSec = now / 1000;
+  if (body.startsWith('LOG,')) {          // LOG,t_us,ax,ay,az,gx,gy,gz,mx,my,mz,roll,pitch,heading,dt_ms,overruns
+    const p = body.split(','); if (p.length !== 16) return;
+    const n = p.slice(1).map(Number); if (n.some(Number.isNaN)) return;
+    [ax, ay, az] = [n[1], n[2], n[3]]; [roll, pitch, heading] = [n[10], n[11], n[12]];
+    gyroMag = Math.hypot(n[4], n[5], n[6]); tSec = n[0] / 1e6; raw = n;
+  } else {                                 // Ax:..,Ay:..,Az:..,Roll:..,Pitch:..,Heading:..,dt_ms:..,Overruns:..
+    const kv = Object.fromEntries(body.split(',').map((x) => x.split(':')));
+    [ax, ay, az, roll, pitch, heading] = ['Ax', 'Ay', 'Az', 'Roll', 'Pitch', 'Heading'].map((k) => Number(kv[k]));
+    if ([ax, ay, az, roll, pitch, heading].some((v) => !Number.isFinite(v))) return;
+    raw = ['', ax, ay, az, '', '', '', '', '', '', roll, pitch, heading, Number(kv.dt_ms), Number(kv.Overruns)];
+  }
+  d.imuT = now; d.imuCount++;
+  const nav = d.nav || (d.nav = makeNav()), wasActive = nav.active;
+  const a = motionAccel(ax, ay, az, roll, pitch, heading);
+  navUpdate(nav, a.wx, a.wy, a.total, a.lin, gyroMag, heading, Math.max(Math.abs(roll), Math.abs(pitch)), tSec);
+  if (!wasActive && nav.active) onImuStart(id, d);
+  let ie = '', inn = '', fe = '', fn = '', q = null;
+  if (nav.active && d.imuStart) {
+    q = navXY(nav);
+    const [e, n] = zeroToENU(d.imuStart.B, q.x, q.y);
+    d.imuPos = { t: now, x: d.imuStart.e + e, y: d.imuStart.n + n, net: q.net };
+    ie = d.imuPos.x; inn = d.imuPos.y;
+    if (cfg.fuse && d.fk) {
+      const [zX, zY] = toZero(nav, a.wx, a.wy);
+      let [aE, aN] = zeroToENU(d.imuStart.B, zX, zY);
+      if (Math.hypot(aE, aN) < ZUPT.DEADBAND) { aE = 0; aN = 0; }
+      const fk = d.fk, dt = fk.imuT == null ? 0 : tSec - fk.imuT; fk.imuT = tSec;
+      if (dt > 0 && dt < 0.25) { kfPredictAccel(fk, dt, aE, aN); fk.wall = now; }
+      // An accelerometer can't tell steady cruising from stopped, so only trust "still" when the filter already says it's slow
+      if (nav.isStill && Math.hypot(fk.x[2], fk.x[3]) < 0.7) kfMeasure(fk, [[0, 0, 1, 0], [0, 0, 0, 1]], [0, 0], [[0.0025, 0], [0, 0.0025]]);
+      fe = fk.x[0]; fn = fk.x[1];
+    }
+  }
+  imuRows.push([((now - (curFlight ? curFlight.t0 : 0)) / 1000).toFixed(3), curFlight ? curFlight.name : '', droneName(dc), id, ...raw, a.total, a.lin, a.hor, a.ver, nav.isStill ? 1 : 0,
+                nav.active ? 1 : 0, nav.active ? nav.traveled : '', q ? q.x : '', q ? q.y : '', ie, inn, fe, fn]);
+  if (imuRows.length > 500000) imuRows.shift();
+}
+
+
+// =====================================================================
+// Fix computation (runs over a log with the virtual clock)
+// =====================================================================
+let curFlight = null, fixRows = [];
+const links = {};
+function resolveNode(id) {   // node IDs can be letters (A, B) or the firmware's node numbers (1 = A, 2 = B)
+  if (id == null) return null;
+  id = String(id).trim();
+  if (cfg.anchors.some((a) => a.id === id)) return id;
+  const n = parseInt(id, 10);
+  if (String(n) === id && cfg.anchors[n - 1]) return cfg.anchors[n - 1].id;
+  return null;
+}
+function computeFix(id) {
+  const di = droneIdx(id); if (di < 0 || !REF || GA.length < 2) return;
+  const dc = cfg.drones[di], d = dstate(id), now = NOW(), flags = [];
+  const alt = droneU(dc, d);
+  if (alt.fallback) flags.push(`No ${dc.altMode === 'gps' ? 'GPS altitude' : 'ALT data'}, used the set flight height`);
+  const ms = [];
+  for (const a of GA) {
+    const s = d.rssi[a.id]; if (!s) continue;
+    const rec = s.filter((x) => now - x.t <= cfg.winSec * 1000).slice(-cfg.winN); if (!rec.length) continue;
+    const r = median(rec.map((x) => x.v)), dist = rangeFromRssi(r, a), dz = alt.u - a.p[2];
+    let rh;
+    if (dist <= Math.abs(dz)) { rh = 0; flags.push(`Distance to ${a.id} (${fL(dist)}) less than the height difference (${fL(Math.abs(dz))})`); }
+    else rh = Math.sqrt(dist * dist - dz * dz);
+    ms.push({ a, rssi: r, n: rec.length, d: dist, rh, sh: Math.min(rangeSigma(dist, a, rec.length) * dist / Math.max(rh, 1), 1e3) });
+  }
+  if (ms.length < 2) return;
+  const pred = kfPredictPos(d, now) || (d.est && now - d.est.t < 10000 ? [d.est.x, d.est.y] : null);
+  const sol = ms.length === 2 ? solve2(ms, dc.side, pred, flags, d.est && now - d.est.t < 10000 ? d.lastSide : null) : solveN(ms, pred, flags);
+  if (!sol) return;
+  d.lastSide = sol.side;
+  sol.cov = posCov(ms, sol.x, sol.y, sol.ok ? 1 : 4);
+  // consecutive fixes share most of their readings (sliding median), so each one carries less new information
+  const kCorr = Math.max(1, Math.min(cfg.winN, mean(ms.map((m) => m.n))));
+  let ex = sol.x, ey = sol.y, cov = sol.cov;
+  if (cfg.kalman) { kfUpdate(d, now, [sol.x, sol.y], sol.cov.map((r) => r.map((v) => v * kCorr))); ex = d.kf.x[0]; ey = d.kf.x[1]; cov = [[d.kf.P[0][0], d.kf.P[0][1]], [d.kf.P[1][0], d.kf.P[1][1]]]; }
+  else d.kf = null;
+  const g = fromENU(ex, ey, alt.u);
+  d.est = { t: now, x: ex, y: ey, u: alt.u, lat: g[0], lon: g[1], sig: sigOf(cov) };
+  let altLL = null; if (sol.alt) { const q2 = fromENU(sol.alt[0], sol.alt[1], alt.u); altLL = [q2[0], q2[1]]; }
+  let fu = null;
+  if (cfg.fuse && d.fk && imuFresh(d)) {
+    if (now - d.fk.wall > 300) { kfPredictAccel(d.fk, Math.min((now - d.fk.wall) / 1000, 5), 0, 0); d.fk.wall = now; }
+    kfMeasure(d.fk, [[1, 0, 0, 0], [0, 1, 0, 0]], [sol.x, sol.y], sol.cov.map((r) => r.map((v) => v * kCorr)));
+    const g2 = fromENU(d.fk.x[0], d.fk.x[1], alt.u);
+    fu = { x: d.fk.x[0], y: d.fk.x[1], lat: g2[0], lon: g2[1], sig: sigOf(d.fk.P), err: null };
+  }
+  const gpsOk = d.gps && d.gps.p && now - d.gps.t < 2000;
+  let err = null;
+  if (gpsOk) { err = Math.hypot(ex - d.gps.p[0], ey - d.gps.p[1]); if (fu) fu.err = Math.hypot(fu.x - d.gps.p[0], fu.y - d.gps.p[1]); }
+  fixRows.push({
+    t: now, flight: curFlight.name, drone: id, name: droneName(dc), nA: ms.length,
+    per: Object.fromEntries(ms.map((m) => [m.a.id, { rssi: m.rssi, d: m.d, rh: m.rh }])),
+    rx: sol.x, ry: sol.y, ex, ey, u: alt.u, lat: g[0], lon: g[1], sig: d.est.sig, sx: Math.sqrt(cov[0][0]), sy: Math.sqrt(cov[1][1]),
+    side: sol.side, ok: sol.ok, altLL,
+    gps: gpsOk ? { lat: d.gps.lat, lon: d.gps.lon, x: d.gps.p[0], y: d.gps.p[1], alt: d.gps.alt, sats: d.gps.sats } : null,
+    err, imu: null, fu, flags: flags.join('; '),
+  });
+}
+
+// =====================================================================
+// Reading one log record
+// =====================================================================
+function onRssi(rx, tx, v) {
+  if (!Number.isFinite(v)) return null;
+  let node = resolveNode(rx), drone = tx == null ? null : String(tx).trim();
+  if (!node && droneIdx(String(rx).trim()) >= 0 && resolveNode(tx)) { node = resolveNode(tx); drone = String(rx).trim(); }   // written the other way round
+  if (!node) { curFlight.warn.add(`Signal from unknown node "${rx}". Node IDs are ${cfg.anchors.map((a) => a.id).join(', ')} (or 1, 2, ...).`); return null; }
+  const now = NOW();
+  const other = resolveNode(drone);
+  if (other) { const k = node + '|' + other; (links[k] = links[k] || []).push(v); return null; }   // node heard node
+  if (droneIdx(drone) < 0) { curFlight.warn.add(`Signal for unknown drone "${drone}". Drone radio IDs are ${cfg.drones.map((d) => d.id).join(', ')}.`); return null; }
+  const d = dstate(drone); d.lastPkt = now;
+  const arr = (d.rssi[node] = d.rssi[node] || []); arr.push({ t: now, v }); if (arr.length > 200) arr.shift();
+  const ga = GA.find((a) => a.id === node);
+  if (ga && d.gps && d.gps.p && now - d.gps.t < 1500) {
+    const u = d.gps.alt != null ? d.gps.p[2] : droneU(cfg.drones[droneIdx(drone)], d).u;
+    curFlight.pl.push({ t: now, anchor: node, drone, rssi: v, d: Math.hypot(d.gps.p[0] - ga.p[0], d.gps.p[1] - ga.p[1], u - ga.p[2]), flight: curFlight.name });
+  }
+  return drone;
+}
+function onGps(id, lat, lon, alt, sats, hdop) {
+  const di = droneIdx(id);
+  if (di < 0) { if (id) curFlight.warn.add(`GPS for unknown drone "${id}".`); return; }
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) return;
+  const d = dstate(id), now = NOW();
+  const g = { t: now, lat, lon, alt: Number.isFinite(alt) ? alt : null, sats, hdop };
+  if (REF) g.p = toENU(lat, lon, g.alt != null ? g.alt : REF.h + cfg.drones[di].alt);
+  d.gps = g;
+  d.gpsTrack.push({ t: now, lat, lon, x: g.p ? g.p[0] : null, y: g.p ? g.p[1] : null });
+}
+function onAlt(id, v) { if (droneIdx(id) < 0 || !Number.isFinite(v)) return; dstate(id).altMsg = { t: NOW(), v }; }
+// Returns the drone ID when the record was a signal reading (so a position can be worked out)
+function processRecord(rec, fd, st) {
+  const tm = rec.match(/^\[([A-Za-z0-9_]+)\]\s?(.*)$/);
+  const tag = tm ? tm[1].toUpperCase() : '', s = (tm ? tm[2] : rec).trim();
+  if (tag === 'IMU2' || tag === 'ESPNOW' || tag === 'SYS') return null;
+  if (s.startsWith('LOG,') || s.startsWith('Ax:')) { onImuLine(fd, s); return null; }
+  if (s.startsWith('{')) {
+    let m = null; try { m = JSON.parse(s); } catch (e) {}
+    if (m && m.type === 'status' && m.state === 'fix') onGps(fd, Number(m.lat), Number(m.lon), Number.isFinite(m.alt) ? m.alt : NaN, m.sats, m.hdop);
+    return null;
+  }
+  let m;
+  if ((m = s.match(/^RX from node\s+(\w+)/i))) { st.pending = m[1]; return null; }
+  if (st.pending != null && (m = s.match(/^RSSI:\s*(-?\d+(?:\.\d+)?)/i))) { const node = st.pending; st.pending = null; return onRssi(node, fd, +m[1]); }
+  const p = s.split(',').map((x) => x.trim()), type = (p[0] || '').toUpperCase();
+  const num = (v) => (v === undefined || v === '' ? NaN : Number(v));
+  if (type === 'RSSI' && p.length >= 4) return onRssi(p[1], p[2], num(p[3]));
+  if (type === 'GPS' && p.length >= 4) { onGps(p[1], num(p[2]), num(p[3]), num(p[4]), num(p[5]), num(p[6])); return null; }
+  if (type === 'ALT' && p.length >= 3) { onAlt(p[1], num(p[2])); return null; }
+  if (type === 'IMU' && p.length >= 17) { onImuLine(p[1], 'LOG,' + p.slice(2, 17).join(',')); return null; }
+  return null;
+}
+
+// =====================================================================
+// Log files and flights
+// =====================================================================
+function parseUTC(v) {   // "153012.00", "15:30:12", "15:30:12.5" -> ms since midnight
+  if (v == null) return null;
+  const m = String(v).trim().match(/^(\d{2}):?(\d{2}):?(\d{2}(?:\.\d+)?)$/);
+  return m ? ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 : null;
+}
+function csvCells(line) {
+  const out = []; let cur = '', qt = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (qt) { if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else qt = false; } else cur += c; }
+    else if (c === '"') qt = true; else if (c === ',') { out.push(cur); cur = ''; } else cur += c;
+  }
+  out.push(cur); return out;
+}
+function parseLog(name, text) {
+  const raw = text.split(/\r?\n/), lines = [], ids = new Set(), utcPairs = [];
+  const dashRaw = /^pc_time,source,line/.test(raw[0] || '');   // raw_log.csv saved by the earlier live dashboard
+  let lastT = null, noTime = 0, timed = 0;
+  for (let k = dashRaw ? 1 : 0; k < raw.length; k++) {
+    const line = raw[k].trim(); if (!line || line.startsWith('#')) continue;
+    let t = null, rec = line, m;
+    if (dashRaw) { const c = csvCells(raw[k]); t = Date.parse(c[0]); rec = (c[2] || '').trim(); if (!Number.isFinite(t)) t = null; if (!rec) continue; }
+    else if ((m = line.match(/^(\d+(?:\.\d+)?)\s*[,;\t ]\s*([\[{A-Za-z].*)$/))) { t = +m[1]; rec = m[2]; }
+    if (t == null && !timed) { const mi = rec.match(/LOG,(\d+),/); if (mi) t = +mi[1] / 1000; }   // no time prefix: use the IMU's own clock
+    if (t == null) { t = lastT ?? 0; noTime++; } else timed++;
+    lastT = t;
+    const body = rec.replace(/^\[[A-Za-z0-9_]+\]\s?/, ''), p = body.split(','), T = (p[0] || '').trim().toUpperCase();
+    let kind = '';
+    if (T === 'RSSI') { kind = 'SIG'; ids.add((p[1] || '').trim()); ids.add((p[2] || '').trim()); }
+    else if (/^(RSSI:|RX from node|SNR:)/i.test(body)) kind = 'SIG';   // the firmware's LoRa printout spans several lines
+    else if (T === 'GPS') { ids.add((p[1] || '').trim()); const u = parseUTC(p[7]); if (u != null) utcPairs.push([t, u]); }
+    else if (T === 'IMU' || T === 'ALT') ids.add((p[1] || '').trim());
+    else if (body.startsWith('{') && body.includes('"utc"')) { try { const j = JSON.parse(body); const u = parseUTC(j.utc); if (u != null && j.state === 'fix') utcPairs.push([t, u]); } catch (e) {} }
+    lines.push({ t, rec, kind });
+  }
+  return { name, text, lines, drones: cfg.drones.map((d) => d.id).filter((id) => ids.has(id)), utcPairs, noTime };
+}
+const flights = [];
+let selF = -1, PH = 0, playing = false, mapDirty = true, cardsDirty = true, plSamples = [];
+const F = () => flights[selF] || null;
+function alignFlight(f) {
+  for (const fl of f.files) fl.utcOffset = fl.utcPairs.length >= 3 ? median(fl.utcPairs.map(([t, u]) => u - t)) : null;
+  const utcStarts = f.files.filter((x) => x.utcOffset != null).map((x) => x.lines[0].t + x.utcOffset);
+  const base = utcStarts.length ? Math.min(...utcStarts) : 0;
+  for (const fl of f.files) fl.shift = (fl.utcOffset != null ? fl.utcOffset : base - fl.lines[0].t) + (Number(fl.offsetS) || 0) * 1000;
+  f.lines = f.files.flatMap((fl, k) => fl.lines.map((ln) => ({ t: ln.t + fl.shift, rec: ln.rec, kind: ln.kind, file: k }))).sort((a, b) => a.t - b.t);
+  f.t0 = f.lines.length ? f.lines[0].t : 0; f.t1 = f.lines.length ? f.lines[f.lines.length - 1].t : 0;
+}
+function processFlight(f) {
+  for (const k of Object.keys(DS)) delete DS[k];
+  for (const k of Object.keys(links)) delete links[k];
+  f.rows = []; f.pl = []; f.imuRows = []; f.warn = new Set(); f.notes = [];
+  fixRows = f.rows; imuRows = f.imuRows; curFlight = f;
+  // Without nodes, use the first GPS fix as the map origin so the GPS and IMU tracks can still be drawn
+  let tempRef = false;
+  if (!REF) for (const ln of f.lines) { const mm2 = ln.rec.match(/GPS,[^,]*,(-?\d+\.\d+),(-?\d+\.\d+)/) || ln.rec.match(/"lat":(-?\d+\.\d+),"lon":(-?\d+\.\d+)/); if (mm2) { REF = makeRef(+mm2[1], +mm2[2], 0); tempRef = true; break; } }
+  cfg.drones.forEach((dc) => armImu(dc.id));   // each IMU zeros the first time its drone sits still
+  const zq = Object.entries(f.zeroAt || {}).map(([id, t]) => ({ id, t })).sort((a, b) => a.t - b.t);
+  const st = f.files.map(() => ({ pending: null })), pend = new Set(), L = f.lines;
+  for (let i = 0; i < L.length; i++) {
+    const ln = L[i]; CLOCK = ln.t;
+    while (zq.length && zq[0].t <= CLOCK) { const z = zq.shift(); armImu(z.id); f.notes.push(`${droneName(cfg.drones[droneIdx(z.id)] || { id: z.id })}: IMU re-zero requested at ${fmtT(z.t - f.t0)}`); }
+    const did = processRecord(ln.rec, f.files[ln.file].drone, st[ln.file]);
+    if (did) pend.add(did);
+    const nx = L[i + 1];
+    if (pend.size && !(nx && nx.kind === 'SIG' && nx.t - ln.t < 60)) { for (const id of pend) computeFix(id); pend.clear(); }   // one fix per burst of readings
+  }
+  // Per-drone results for the replay
+  f.out = {};
+  for (const dc of cfg.drones) {
+    const d = DS[dc.id]; if (!d) continue;
+    const imuPath = [];
+    if (d.nav && d.nav.active && d.imuStart && REF) {
+      for (const q of d.nav.path) {
+        const [zx, zy] = toZero(d.nav, q[0], q[1]), [de, dn] = zeroToENU(d.imuStart.B, zx, zy), x = d.imuStart.e + de, y = d.imuStart.n + dn, g = fromENU(x, y, dc.alt);
+        imuPath.push({ t: q[3], x, y, lat: g[0], lon: g[1] });
+      }
+    }
+    const rows = f.rows.filter((r) => r.drone === dc.id);
+    // IMU-only positions after each move's drift fix (the corrected path), matched to each radio fix
+    if (imuPath.length) for (const r of rows) {
+      const k = idxAt(imuPath, r.t); if (k < 0 || r.t > d.imuT + 1500) continue;
+      const pt = imuPath[k];
+      r.imu = { x: pt.x, y: pt.y, lat: pt.lat, lon: pt.lon, net: Math.hypot(pt.x - d.imuStart.e, pt.y - d.imuStart.n), err: r.gps ? Math.hypot(pt.x - r.gps.x, pt.y - r.gps.y) : null };
+    }
+    f.out[dc.id] = { rows, gps: d.gpsTrack.slice(), imuPath, imuStart: d.imuStart, imuCount: d.imuCount, imuEnd: d.imuT, sig: d.lastPkt };
+  }
+  f.links = clone(links);
+  if (tempRef) { REF = null; f.notes.push('No nodes set, so only the GPS and IMU tracks are shown.'); }
+  CLOCK = 0; curFlight = null;
+}
+let recomputeTimer = null;
+function scheduleRecompute() { clearTimeout(recomputeTimer); recomputeTimer = setTimeout(recomputeAll, 250); }
+function recomputeAll() {
+  if (!flights.length) return;
+  const rel = F() ? PH - F().t0 : 0;
+  rebuildGeometry();
+  for (const f of flights) { alignFlight(f); processFlight(f); }
+  plSamples = flights.flatMap((f) => f.pl);
+  if (F()) setPH(F().t0 + rel);
+  afterData();
+}
+function addFlight(parsed, name) {
+  const used = new Set();
+  const f = { name: name || `Flight ${flights.length + 1}`, files: parsed.map((pf) => ({ ...pf, offsetS: 0, drone: null })), crop: null, zeroAt: {}, warn: new Set(), notes: [] };
+  // each file belongs to the drone whose ID is inside it, otherwise drones in load order
+  f.files.forEach((fl) => { const id = fl.drones.find((x) => !used.has(x)); if (id) { fl.drone = id; used.add(id); } });
+  f.files.forEach((fl) => { if (!fl.drone) { const free = cfg.drones.find((dd) => !used.has(dd.id)) || cfg.drones[0]; fl.drone = free.id; used.add(free.id); } });
+  rebuildGeometry(); alignFlight(f); processFlight(f);
+  flights.push(f); selF = flights.length - 1;
+  plSamples = flights.flatMap((x) => x.pl);
+  setPH(f.t0);
+  return f;
+}
+
+// =====================================================================
+// "Set node": laptop location right away, then GPS averaging if a GPS is sending
+// =====================================================================
+let nodeJob = null, jobSeq = 0;
+function liveGpsSource() {
+  const now = Date.now(), want = $('svSrc').value;
+  const recent = Object.entries(gpsSeen).filter(([, g]) => now - g.t < 5000);
+  if (want !== 'auto') return recent.find(([k]) => k === want) ? want : null;
+  const notDrone = recent.filter(([k]) => droneIdx(k) < 0);
+  const pick = notDrone.find(([k]) => k === 'GPS board') || notDrone[0];
+  return pick ? pick[0] : null;
+}
+function refreshSvSources() {
+  const sel = $('svSrc'), v = sel.value, keys = Object.keys(gpsSeen);
+  if (sel.options.length === keys.length + 1) return;
+  sel.innerHTML = '<option value="auto">Automatic (not a drone)</option>' + keys.map((k) => `<option>${esc(k)}</option>`).join('');
+  sel.value = [...sel.options].some((o) => o.value === v) ? v : 'auto';
+}
+function setAnchorPos(i, lat, lon, src, acc, elev) {
+  const a = cfg.anchors[i];
+  a.lat = +lat.toFixed(8); a.lon = +lon.toFixed(8); a.src = src; a.acc = acc; a.setAt = Date.now();
+  if (elev != null && Number.isFinite(elev)) a.elev = +elev.toFixed(2);
+  const sideKey = BASE ? BASE.plusName + GA.length : '';
+  saveCfg(); rebuildGeometry(); syncNodeMarkers(); refreshNodeCards(); if (zoneLayer) zoneLayer.redraw();
+  if (src !== 'gpsrun') scheduleRecompute();
+  if ((BASE ? BASE.plusName + GA.length : '') !== sideKey) renderDroneCards();
+}
+function jobMsg(i, text, warn) { const el = $(`node-${i}-msg`); if (el) { el.textContent = text; el.className = 'msg' + (warn ? ' warn' : ''); } }
+function setNode(i) {
+  if (nodeJob && nodeJob.i === i) { cancelJob('Cancelled.'); return; }
+  if (nodeJob) cancelJob('');
+  const job = { i, id: ++jobSeq, start: Date.now(), survey: null, laptopDone: false, gotLaptop: false };
+  nodeJob = job;
+  const gsrc = liveGpsSource();
+  if (gsrc) job.survey = { src: gsrc, secs: Math.max(5, cfg.surveySecs || 30), samples: [] };
+  // 1. laptop location (instant placement, rough)
+  if ('geolocation' in navigator) {
+    navigator.geolocation.getCurrentPosition((pos) => {
+      if (nodeJob !== job) return;
+      job.laptopDone = true; job.gotLaptop = true;
+      const c = pos.coords;
+      if (!job.survey || job.survey.samples.length < 3) {
+        setAnchorPos(i, c.latitude, c.longitude, 'laptop', c.accuracy, Number.isFinite(c.altitude) ? c.altitude - (cfg.anchors[i].antH || 0) : null);
+        flyToNodes();
+      }
+      if (!job.survey) finishJob(c.accuracy > 10
+        ? `Placed from the laptop's location, about ${fL(c.accuracy, 0)} off. That is rough: plug in the GPS board and press Set node again, or drag the node on the map to the exact spot.`
+        : `Placed from this device's location (about ${fL(c.accuracy, 0)}). Drag it on the map if it's off.`, c.accuracy > 10);
+    }, (err) => {
+      if (nodeJob !== job) return;
+      job.laptopDone = true;
+      if (!job.survey) finishJob(`Couldn't get the laptop's location (${err.message}). In macOS, allow Chrome under System Settings, Privacy & Security, Location Services. Or plug in the GPS board, or press "Place on map" and drag the node.`, true);
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  } else { job.laptopDone = true; if (!job.survey) { finishJob('This browser has no location access. Plug in the GPS board, or use "Place on map".', true); return; } }
+  refreshNodeCards(); jobTick();
+}
+function cancelJob(text) { if (!nodeJob) return; const i = nodeJob.i; nodeJob = null; refreshNodeCards(); if (text != null) jobMsg(i, text); }
+function finishJob(text, warn) { if (!nodeJob) return; const i = nodeJob.i; nodeJob = null; refreshNodeCards(); jobMsg(i, text, warn); }
+function surveyFeed(src, lat, lon, alt, sats) {
+  refreshSvSources();
+  const j = nodeJob; if (!j || !j.survey || j.survey.src !== src) return;
+  j.survey.samples.push({ lat, lon, alt: Number.isFinite(alt) ? alt : null, sats });
+  const n = j.survey.samples.length;
+  if (n >= 3 && n % 3 === 0) {           // live preview at the running median
+    setAnchorPos(j.i, median(j.survey.samples.map((p) => p.lat)), median(j.survey.samples.map((p) => p.lon)), 'gpsrun', null, null);
+    if (n === 3) flyToNodes();
+  }
+}
+function jobTick() {
+  const j = nodeJob; if (!j) return;
+  const bar = $(`node-${j.i}-bar`), prog = $(`node-${j.i}-prog`);
+  if (j.survey) {
+    const s = j.survey, el = (Date.now() - j.start) / 1000, left = Math.max(0, s.secs - el), last = s.samples.at(-1);
+    if (prog) prog.style.display = ''; if (bar) bar.style.width = (100 * Math.min(1, el / s.secs)) + '%';
+    jobMsg(j.i, s.samples.length ? `Averaging GPS: ${s.samples.length} fixes${last && Number.isFinite(last.sats) ? `, ${last.sats} satellites` : ''}, ${left.toFixed(0)} s left. Keep the GPS on the node.`
+                                 : `Waiting for a GPS fix from "${s.src}"... ${left.toFixed(0)} s left`);
+    if (left <= 0) finishSurvey(j);
+  } else {
+    if (prog) prog.style.display = 'none';
+    jobMsg(j.i, 'Getting the laptop location...');
+  }
+}
+function finishSurvey(j) {
+  const s = j.survey, n = s.samples.length, i = j.i;
+  if (n < 5) {
+    if (isSet(cfg.anchors[i]) && cfg.anchors[i].src === 'gpsrun') cfg.anchors[i].src = 'map';
+    finishJob(`Only ${n} GPS fixes came in, so the GPS wasn't used.${j.gotLaptop ? ' Kept the laptop location.' : ''} Make sure the GPS has a clear view of the sky.`, true);
+    return;
+  }
+  const lat = median(s.samples.map((p) => p.lat)), lon = median(s.samples.map((p) => p.lon));
+  const kN = 111320, kE = kN * Math.cos(lat * D2R);
+  const spread = s.samples.map((p) => Math.hypot((p.lat - lat) * kN, (p.lon - lon) * kE)).sort((x, y) => x - y)[Math.floor(n * 0.95) - 1] || 0;
+  const alts = s.samples.map((p) => p.alt).filter((v) => v != null);
+  setAnchorPos(i, lat, lon, 'gps', Math.max(spread, 1.5), alts.length >= 5 ? median(alts) - (cfg.anchors[i].antH || 0) : null);
+  logLine(`[dash] Node ${cfg.anchors[i].id} set from ${n} GPS fixes (95% within ${spread.toFixed(1)} m)`);
+  flyToNodes();
+  finishJob(`Set from ${n} GPS fixes. 95% of them were within ${fL(spread)}.` + (spread > 5 ? ' That spread is large, try again with a clearer sky.' : ''), spread > 5);
+}
+function placeOnMap(i) {
+  const a = cfg.anchors[i];
+  if (isSet(a)) { map.flyTo([a.lat, a.lon], Math.max(map.getZoom(), 19)); followOff(); return; }
+  const c = map.getCenter();
+  setAnchorPos(i, c.lat, c.lng, 'map', null, null);
+  jobMsg(i, 'Placed in the middle of the map. Drag it to the exact spot on the satellite image.');
+}
+function nodeStatus(a) {
+  if (!isSet(a)) return { cls: 'none', text: 'Not set' };
+  switch (a.src) {
+    case 'gps': return { cls: 'good', text: `GPS, ±${fL(a.acc)}` };
+    case 'gpsrun': return { cls: 'ok', text: 'Averaging GPS...' };
+    case 'laptop': return a.acc > 10 ? { cls: 'rough', text: `Laptop, ±${fL(a.acc, 0)}` } : { cls: 'ok', text: `Device, ±${fL(a.acc, 0)}` };
+    case 'map': return { cls: 'ok', text: 'Placed on map' };
+    case 'demo': return { cls: 'ok', text: 'Demo spot' };
+    default: return { cls: 'ok', text: 'Typed in' };
+  }
+}
+
+// =====================================================================
+// Setup tab: nodes and drones
+// =====================================================================
+const openDetails = new Set();
+function renderNodeCards() {
+  $('nodeList').innerHTML = cfg.anchors.map((a, i) => `
+    <div class="node" id="node-${i}">
+      <div class="nodeTop">
+        <span class="badge" style="--c:${anchorColor(i)}">${esc(a.id)}</span>
+        <div class="title"><b>Node ${esc(a.id)}</b><span class="coord" id="node-${i}-coord"></span></div>
+        <span class="chip" id="node-${i}-chip"></span>
+      </div>
+      <div class="btns" style="margin-top:2px">
+        <button class="primary setBtn" id="node-${i}-btn" data-set="${i}">Set node</button>
+        <button class="small" data-place="${i}" id="node-${i}-place"></button>
+      </div>
+      <div class="prog" id="node-${i}-prog" style="display:none"><div id="node-${i}-bar"></div></div>
+      <div class="msg" id="node-${i}-msg"></div>
+      <details class="more" data-det="${i}" ${openDetails.has(i) ? 'open' : ''}><summary>Details</summary>
+        <div class="g2">
+          <label>Latitude<input data-a="${i}" data-f="lat" value="${a.lat ?? ''}" placeholder="42.4075120"></label>
+          <label>Longitude<input data-a="${i}" data-f="lon" value="${a.lon ?? ''}" placeholder="-71.1190400"></label>
+          <label>Antenna height above ground (${us()})<input data-a="${i}" data-f="antH" type="number" step="any" value="${toDisp(a.antH)}"></label>
+          <label>Ground elevation (${us()})<input data-a="${i}" data-f="elev" type="number" step="any" value="${toDisp(a.elev)}"></label>
+          <label>Signal at 1 m (dBm)<input data-a="${i}" data-f="A" type="number" step="0.5" value="${a.A}"></label>
+          <label>Fade rate n<input data-a="${i}" data-f="n" type="number" step="0.05" min="1" max="6" value="${a.n}"></label>
+        </div>
+        <p class="hint">Radio ID: <b>${esc(a.id)}</b> (what the firmware must send). Ground elevation only matters if the nodes are at different heights.
+          ${i >= 2 ? `<button class="link" data-del="${i}">Remove this node</button>` : ''}</p>
+      </details>
+    </div>`).join('');
+  $('addNode').disabled = cfg.anchors.length >= MAX_ANCHORS;
+  refreshNodeCards();
+}
+function refreshNodeCards() {
+  cfg.anchors.forEach((a, i) => {
+    const c = $(`node-${i}-coord`); if (!c) return;
+    c.textContent = isSet(a) ? `${a.lat.toFixed(7)}, ${a.lon.toFixed(7)}` : 'Not set yet'; c.className = 'coord' + (isSet(a) ? '' : ' unset');
+    const st = nodeStatus(a), chip = $(`node-${i}-chip`); chip.className = 'chip ' + st.cls; chip.textContent = st.text;
+    const busy = nodeJob && nodeJob.i === i, btn = $(`node-${i}-btn`);
+    btn.textContent = busy ? 'Cancel' : (isSet(a) ? 'Set node again' : 'Set node');
+    btn.className = busy ? 'setBtn' : 'primary setBtn';
+    $(`node-${i}-place`).textContent = isSet(a) ? 'Show on map' : 'Place on map';
+    if (!busy) $(`node-${i}-prog`).style.display = 'none';
+    ['lat', 'lon'].forEach((f) => { const inp = document.querySelector(`[data-a="${i}"][data-f="${f}"]`); if (inp && document.activeElement !== inp) inp.value = a[f] ?? ''; });
+    const el = document.querySelector(`[data-a="${i}"][data-f="elev"]`); if (el && document.activeElement !== el) el.value = toDisp(a.elev);
+  });
+  const nSet = cfg.anchors.filter(isSet).length;
+  $('nodeHint').textContent = nSet >= 2 && cfg.anchors.length === 2 ? 'A 3rd node, off the line between A and B, removes the mirror-image problem.' : '';
+}
+$('nodeList').addEventListener('click', (e) => {
+  const s = e.target.closest('[data-set]'); if (s) { setNode(+s.dataset.set); return; }
+  const p = e.target.closest('[data-place]'); if (p) { placeOnMap(+p.dataset.place); return; }
+  const d = e.target.closest('[data-del]'); if (d) { const i = +d.dataset.del; if (nodeJob) cancelJob(''); cfg.anchors.splice(i, 1); cfg.anchors.forEach((a, k) => { a.id = String.fromCharCode(65 + k); }); saveCfg(); rebuildGeometry(); renderAll(); scheduleRecompute(); }
+});
+$('nodeList').addEventListener('toggle', (e) => { const d = e.target.closest('[data-det]'); if (d) { const i = +d.dataset.det; d.open ? openDetails.add(i) : openDetails.delete(i); } }, true);
+$('nodeList').addEventListener('change', (e) => {
+  const el = e.target, i = +el.dataset.a, f = el.dataset.f; if (!f) return;
+  const a = cfg.anchors[i], v = el.value.trim();
+  if (f === 'lat' || f === 'lon') {
+    const m = v.match(/^\s*(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (f === 'lat' && m) { a.lat = +m[1]; a.lon = +m[2]; } else a[f] = v === '' ? null : Number(v);
+    if (a[f] != null && !Number.isFinite(a[f])) a[f] = null;
+    a.src = isSet(a) ? 'typed' : 'none'; a.acc = null;
+  } else if (f === 'elev' || f === 'antH') a[f] = v === '' ? 0 : fromDisp(Number(v));
+  else if (Number.isFinite(Number(v))) a[f] = Number(v);
+  saveCfg(); rebuildGeometry(); syncNodeMarkers(); refreshNodeCards(); if (zoneLayer) zoneLayer.redraw();
+  if (f === 'lat' || f === 'lon') flyToNodes();
+  scheduleRecompute();
+});
+$('addNode').onclick = () => {
+  if (cfg.anchors.length >= MAX_ANCHORS) return;
+  const last = cfg.anchors[cfg.anchors.length - 1];
+  cfg.anchors.push({ id: String.fromCharCode(65 + cfg.anchors.length), lat: null, lon: null, elev: last.elev, antH: last.antH, A: last.A, n: last.n, src: 'none', acc: null });
+  saveCfg(); renderAll();
+};
+function renderDroneCards() {
+  const pn = BASE ? BASE.plusName : 'one', mn = BASE ? BASE.minusName : 'other';
+  $('droneList').innerHTML = cfg.drones.map((d, i) => `
+    <div class="node">
+      <div class="nodeTop">
+        <span class="badge round" style="--c:${droneColor(i)}"></span>
+        <div class="title"><b>${esc(droneName(d))}</b><span>Drone ${i + 1}, radio ID ${esc(d.id)}</span></div>
+      </div>
+      <div class="g2">
+        <label>Flight height (${us()})<input data-d="${i}" data-f="alt" type="number" step="any" value="${toDisp(d.alt)}"></label>
+        <label>Starts on which side<select data-d="${i}" data-f="side" ${GA.length > 2 ? 'disabled title="Not needed with 3+ nodes"' : ''}>
+          <option value="auto+">${esc(pn)} side of ${BASE ? `${BASE.a}-${BASE.b}` : 'the node line'}</option>
+          <option value="auto-">${esc(mn)} side of ${BASE ? `${BASE.a}-${BASE.b}` : 'the node line'}</option>
+          <option value="+">Always ${esc(pn)} side</option><option value="-">Always ${esc(mn)} side</option></select></label>
+        <label style="grid-column:1/-1">IMU: when it zeros, the nose (IMU X axis) points
+          <div class="addRow"><select data-d="${i}" data-f="noseRef">
+            ${cfg.anchors.map((a) => `<option value="node:${esc(a.id)}">toward node ${esc(a.id)}</option>`).join('')}
+            <option value="deg">at a compass bearing</option></select>
+            <input data-d="${i}" data-f="noseDeg" type="number" step="1" min="0" max="360" value="${d.noseDeg}" style="width:90px;${d.noseRef === 'deg' ? '' : 'display:none'}" title="Degrees clockwise from north">
+          </div></label>
+      </div>
+      <details class="more"><summary>Details</summary>
+        <div class="g2">
+          <label>Name<input data-d="${i}" data-f="name" value="${esc(d.name)}"></label>
+          <label>Radio ID (firmware)<input data-d="${i}" data-f="id" value="${esc(d.id)}"></label>
+          <label style="grid-column:1/-1">Height comes from<select data-d="${i}" data-f="altMode">
+            <option value="fixed">The flight height above</option><option value="gps">The drone's GPS altitude</option><option value="msg">ALT messages</option></select></label>
+        </div>
+        <p class="hint">With 2 nodes there are always two possible spots, mirrored across the line between the nodes.
+          Tell it which side the drone takes off on and it follows the track from there.</p>
+      </details>
+    </div>`).join('');
+  cfg.drones.forEach((d, i) => {
+    $('droneList').querySelector(`[data-d="${i}"][data-f="side"]`).value = d.side;
+    $('droneList').querySelector(`[data-d="${i}"][data-f="altMode"]`).value = d.altMode;
+    const ns = $('droneList').querySelector(`[data-d="${i}"][data-f="noseRef"]`);
+    ns.value = [...ns.options].some((o) => o.value === d.noseRef) ? d.noseRef : 'deg';
+  });
+}
+$('droneList').addEventListener('change', (e) => {
+  const el = e.target, i = +el.dataset.d, f = el.dataset.f; if (!f) return;
+  const d = cfg.drones[i], v = el.value.trim();
+  if (f === 'id') { if (v && v !== d.id) { if (DS[d.id]) { DS[v] = DS[d.id]; delete DS[d.id]; } d.id = v; } }
+  else if (f === 'name') d.name = v || d.id;
+  else if (f === 'alt') d.alt = fromDisp(Number(v) || 0);
+  else if (f === 'noseDeg') d.noseDeg = ((Number(v) || 0) % 360 + 360) % 360;
+  else d[f] = v;
+  if (f === 'noseRef') { renderDroneCards(); }
+  if (f === 'side' && DS[d.id]) { DS[d.id].kf = null; DS[d.id].est = null; }
+  saveCfg();
+  if (f === 'name' || f === 'id') { renderDroneCards(); renderCalSelects(); renderLegends(); rebuildDroneMarkers(); }
+  if (f === 'alt' && zoneLayer) zoneLayer.redraw();
+  scheduleRecompute();
+});
+
+
+// =====================================================================
+// Flight tab: files, analysis window, drone cards at the playhead
+// =====================================================================
+const inCrop = (f, t) => !f.crop || (t >= f.crop[0] && t <= f.crop[1]);
+function statsOf(e) { e = e.filter((v) => v != null); if (!e.length) return null; let mx = 0; for (const v of e) mx = Math.max(mx, v); return { n: e.length, med: median(e), rmse: Math.sqrt(mean(e.map((v) => v * v))), max: mx }; }
+const METHODS = [['radio', 'Radio', (r) => r.err], ['imu', 'IMU only', (r) => (r.imu ? r.imu.err : null)], ['fused', 'Radio + IMU', (r) => (r.fu ? r.fu.err : null)]];
+function flightStats(f, id) {
+  const rows = (f.out && f.out[id] ? f.out[id].rows : []).filter((r) => inCrop(f, r.t));
+  return { fixes: rows.length, withGps: rows.filter((r) => r.err != null).length, by: Object.fromEntries(METHODS.map(([k, , fn]) => [k, statsOf(rows.map(fn))])) };
+}
+function renderFlightPanel() {
+  const f = F();
+  $('flightSel').innerHTML = flights.length ? flights.map((x, i) => `<option value="${i}">${esc(x.name)}</option>`).join('') : '<option>No flight loaded</option>';
+  $('flightSel').value = String(selF); $('flightSel').disabled = !flights.length;
+  $('flightName').value = f ? f.name : ''; $('flightName').disabled = !f;
+  ['cropStart', 'cropEnd', 'cropReset'].forEach((id) => { $(id).disabled = !f; });
+  if (!f) {
+    $('fileList').innerHTML = `<div class="empty"><b>No flight loaded</b>Drag the drones' log files onto the page, press "Load flight logs",
+      or plug a drone in and press "Read log from drone". "Demo flight" shows how it works.</div>`;
+    $('cropInfo').textContent = ''; return;
+  }
+  $('fileList').innerHTML = f.files.map((fl, k) => `<div class="file"><div class="fn">${esc(fl.name)}</div>
+      <div class="row2">${fl.lines.length.toLocaleString()} lines, ${fmtT(fl.lines[fl.lines.length - 1].t - fl.lines[0].t)} long
+        <label class="row">from <select data-fdrone="${k}">${cfg.drones.map((d) => `<option value="${esc(d.id)}" ${d.id === fl.drone ? 'selected' : ''}>${esc(droneName(d))}</option>`).join('')}</select></label></div>
+      <div class="row2">${fl.utcOffset != null ? 'Lined up with the other logs by GPS time'
+        : `Lined up by its start time, shifted <input data-foff="${k}" type="number" step="0.5" value="${fl.offsetS}" style="width:70px"> s`}${fl.noTime ? `. ${fl.noTime} lines had no time stamp` : ''}</div>
+    </div>`).join('') +
+    (f.warn.size ? `<ul class="flags">${[...f.warn].slice(0, 6).map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : '') +
+    (f.notes.length ? `<p class="hint" style="margin:0">${f.notes.map(esc).join('<br>')}</p>` : '');
+  $('cropInfo').textContent = f.crop ? `Analysis window: ${fmtT(f.crop[0] - f.t0)} to ${fmtT(f.crop[1] - f.t0)} of ${fmtT(f.t1 - f.t0)}` : `Analyzing the whole flight (${fmtT(f.t1 - f.t0)})`;
+}
+$('flightSel').onchange = (e) => { selF = +e.target.value; const f = F(); if (f) setPH(f.t0); afterData(); fitAll(false); };
+$('flightName').onchange = (e) => { const f = F(); if (!f) return; f.name = e.target.value.trim() || f.name; for (const r of f.rows) r.flight = f.name; afterData(); };
+$('fileList').addEventListener('change', (e) => {
+  const f = F(); if (!f) return;
+  const el = e.target;
+  if (el.dataset.fdrone != null) f.files[+el.dataset.fdrone].drone = el.value;
+  else if (el.dataset.foff != null) f.files[+el.dataset.foff].offsetS = Number(el.value) || 0;
+  else return;
+  const rel = PH - f.t0; rebuildGeometry(); alignFlight(f); processFlight(f); plSamples = flights.flatMap((x) => x.pl); setPH(f.t0 + rel); afterData();
+});
+$('cropStart').onclick = () => { const f = F(); if (!f) return; f.crop = [PH, f.crop ? Math.max(PH + 1000, f.crop[1]) : f.t1]; afterData(); };
+$('cropEnd').onclick = () => { const f = F(); if (!f) return; f.crop = [f.crop ? Math.min(f.crop[0], PH - 1000) : f.t0, PH]; afterData(); };
+$('cropReset').onclick = () => { const f = F(); if (!f) return; f.crop = null; afterData(); };
+
+function bars(rssi) {
+  const lvl = rssi > -60 ? 4 : rssi > -75 ? 3 : rssi > -90 ? 2 : rssi > -105 ? 1 : 0;
+  return `<span class="bars">${[5, 8, 11, 14].map((h, k) => `<i class="${k < lvl ? 'on' : ''}" style="height:${h}px"></i>`).join('')}</span>`;
+}
+function renderFlightCards() {
+  cardsDirty = false;
+  const f = F();
+  if (!f) { $('liveCards').innerHTML = ''; return; }
+  $('liveCards').innerHTML = cfg.drones.map((dc, i) => {
+    const o = f.out[dc.id];
+    const head = (state, on) => `<div class="nodeTop"><span class="badge round" style="--c:${droneColor(i)}"></span>
+        <div class="title"><b>${esc(droneName(dc))}</b><span>radio ID ${esc(dc.id)}</span></div><span class="state ${on ? 'on' : 'off'}">${esc(state)}</span></div>`;
+    if (!o) return `<div class="card live">${head('Not in this flight', false)}</div>`;
+    const ri = idxAt(o.rows, PH), r = ri >= 0 && PH - o.rows[ri].t < 3000 ? o.rows[ri] : null;
+    const gi = idxAt(o.gps, PH), g = gi >= 0 && PH - o.gps[gi].t < 3000 ? o.gps[gi] : null;
+    const st = flightStats(f, dc.id), v = (x) => (x ? fL(x.med) : '--'), nowV = (x) => (x != null ? fL(x) : '--');
+    const imuOn = o.imuStart && PH >= o.imuStart.t && PH <= o.imuEnd + 1500;
+    const imuLine = !o.imuCount ? 'No IMU data in this log'
+      : !o.imuStart ? 'Never zeroed: the drone was never still long enough'
+      : PH < o.imuStart.t ? `Zeros at ${fmtT(o.imuStart.t - f.t0)} (first moment the drone sat still), from its ${o.imuStart.from} position`
+      : `Zeroed at ${fmtT(o.imuStart.t - f.t0)} from its ${o.imuStart.from} position${r && r.imu ? `, now ${fL(r.imu.net)} from there` : ''}`;
+    const state = r ? 'Radio fix' : g ? 'GPS only' : imuOn ? 'IMU only' : (PH < (o.rows[0] || o.gps[0] || { t: Infinity }).t ? 'Not started' : 'No signal');
+    const pos = r || g;
+    const sig = r ? `<div class="sig">` + Object.entries(r.per).map(([id, m]) => { const ai = cfg.anchors.findIndex((a) => a.id === id);
+      return `<span class="sw sq" style="background:${anchorColor(Math.max(0, ai))}"></span><span>Node ${esc(id)}</span><span>${bars(m.rssi)} <span class="num" style="color:var(--muted)">${m.rssi.toFixed(0)} dBm</span></span><b class="num">${fL(m.d)}</b>`; }).join('') + '</div>' : '';
+    return `<div class="card live">
+      ${head(state, !!(r || g))}
+      <div class="big">${pos ? `${pos.lat.toFixed(7)}, ${pos.lon.toFixed(7)}` : '--'}</div>
+      <div class="sub">${r ? `Radio position, &plusmn;${fL(r.sig, 0)} expected (1&sigma;), ${fL(r.u)} up` : g ? 'GPS position (no radio fix right now)' : 'Nothing at this moment'}
+        ${pos ? ` &middot; <a href="https://www.google.com/maps/search/?api=1&query=${pos.lat.toFixed(7)},${pos.lon.toFixed(7)}" target="_blank" rel="noopener">Google Maps</a>` : ''}</div>
+      <div class="hint" style="margin:6px 0 0">Distance from GPS: now / median for the analysis window</div>
+      <div class="now3">
+        <div><b>${nowV(r && r.err)}</b>radio<small>median ${v(st.by.radio)}</small></div>
+        <div><b>${nowV(r && r.imu && r.imu.err)}</b>IMU only<small>median ${v(st.by.imu)}</small></div>
+        <div><b>${nowV(r && r.fu && r.fu.err)}</b>radio + IMU<small>median ${v(st.by.fused)}</small></div>
+      </div>
+      ${sig}
+      ${r && r.flags ? `<ul class="flags">${r.flags.split('; ').map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      <div class="imuRow"><span><b>IMU</b> ${esc(imuLine)}</span>
+        ${o.imuCount ? `<button class="small" data-zero="${esc(dc.id)}" title="Re-zero the IMU here (it waits until the drone is still)">Zero IMU here</button>` : ''}</div>
+    </div>`;
+  }).join('');
+}
+$('liveCards').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-zero]'); const f = F(); if (!b || !f) return;
+  f.zeroAt[b.dataset.zero] = PH; const rel = PH - f.t0;
+  processFlight(f); plSamples = flights.flatMap((x) => x.pl); setPH(f.t0 + rel); afterData();
+});
+
+// =====================================================================
+// Results tab
+// =====================================================================
+function renderStats() {
+  const v = (m, d = 1) => (m == null || !Number.isFinite(m)) ? '--' : (m * uk()).toFixed(d);
+  const cell = (st) => st ? `<b title="RMSE ${v(st.rmse)} ${us()}, max ${v(st.max)} ${us()}, ${st.n} fixes">${v(st.med)}</b>` : '--';
+  const rows = [];
+  flights.forEach((f) => cfg.drones.forEach((dc) => { const st = flightStats(f, dc.id); if (st.fixes) rows.push({ f, dc, st }); }));
+  $('statsTable').innerHTML = rows.length ? `<table><thead><tr><th>Flight</th><th>Drone</th><th>Fixes</th><th>Radio</th><th>IMU only</th><th>Radio + IMU</th></tr></thead><tbody>` +
+    rows.map(({ f, dc, st }) => `<tr><td>${esc(f.name)}</td><td>${esc(droneName(dc))}</td><td>${st.fixes}${st.withGps < st.fixes ? `<br><span class="hint">${st.withGps} w/ GPS</span>` : ''}</td>
+      <td>${cell(st.by.radio)}</td><td>${cell(st.by.imu)}</td><td>${cell(st.by.fused)}</td></tr>`).join('') +
+    `</tbody></table><p class="hint">Median distance from GPS, in ${us()}. Hover a number for RMSE and max; all of it is in summary.csv.</p>`
+    : '<p class="hint" style="margin:0">No radio positions yet. Load a flight (and set the nodes).</p>';
+}
+
+// =====================================================================
+// Calibration
+// =====================================================================
+let lastFit = null;
+const calPoints = [];
+
+function fitGroups(points) {
+  const by = {};
+  for (const p of points) if (p.d > 0 && Number.isFinite(p.rssi)) (by[p.anchor] = by[p.anchor] || []).push(p);
+  const out = [];
+  for (const [id, ps] of Object.entries(by)) {
+    const anc = cfg.anchors.find((a) => a.id === id); if (!anc) continue;
+    const xs = ps.map((p) => 10 * Math.log10(p.d)), ys = ps.map((p) => p.rssi);
+    let dmin = Infinity, dmax = 0; for (const p of ps) { dmin = Math.min(dmin, p.d); dmax = Math.max(dmax, p.d); }
+    let A, n, note = '';
+    if (ps.length >= 2 && dmax / dmin >= 1.5) {
+      const mx = mean(xs), my = mean(ys); let sxx = 0, sxy = 0;
+      xs.forEach((x, i) => { sxx += (x - mx) ** 2; sxy += (x - mx) * (ys[i] - my); });
+      const slope = sxy / sxx; n = -slope; A = my - slope * mx;
+      if (!(n >= 1 && n <= 6)) note = 'n is outside 1 to 6, check the data';
+    } else { n = anc.n; A = mean(ys.map((y, i) => y + n * xs[i])); note = 'Only one distance, so n was kept'; }
+    const res = ys.map((y, i) => y - (A - n * xs[i]));
+    out.push({ id, count: ps.length, A, n, sd: Math.sqrt(res.reduce((s, r) => s + r * r, 0) / Math.max(1, res.length - 2)), dmin, dmax, note });
+  }
+  return out;
+}
+function showFit(res, label) {
+  lastFit = res; $('fitCard').style.display = '';
+  if (!res.length) { $('fitOut').innerHTML = `<p class="hint" style="margin:0">No usable ${esc(label)} yet.</p>`; return; }
+  $('fitOut').innerHTML = `<table><thead><tr><th>Node</th><th>Points</th><th>Signal @1m</th><th>n</th><th>Noise</th><th></th></tr></thead><tbody>` +
+    res.map((r, i) => `<tr><td>${esc(r.id)}</td><td>${r.count}</td><td>${r.A.toFixed(1)}</td><td>${r.n.toFixed(2)}</td><td>${r.sd.toFixed(1)} dB</td>
+      <td><button class="small" data-apply="${i}">Use</button></td></tr>` + (r.note ? `<tr><td colspan="6" class="hint" style="text-align:left">${esc(r.note)}</td></tr>` : '')).join('') +
+    `</tbody></table><div class="btns"><button class="small primary" data-apply="all">Use all</button><button class="small" data-sigma="1">Also set signal noise to ${mean(res.map((r) => r.sd)).toFixed(1)} dB</button></div>
+    <p class="hint">From ${esc(label)}, ${fmt(Math.min(...res.map((r) => r.dmin)), 1)} to ${fmt(Math.max(...res.map((r) => r.dmax)), 1)} m.</p>`;
+}
+$('fitOut').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b || !lastFit) return;
+  if (b.dataset.sigma) { cfg.sigmaDb = +mean(lastFit.map((r) => r.sd)).toFixed(1); saveCfg(); renderSettings(); scheduleRecompute(); b.textContent = 'Done'; return; }
+  const list = b.dataset.apply === 'all' ? lastFit : [lastFit[+b.dataset.apply]];
+  for (const r of list) { const a = cfg.anchors.find((x) => x.id === r.id); if (a) { a.A = +r.A.toFixed(1); a.n = +r.n.toFixed(2); } }
+  saveCfg(); rebuildGeometry(); renderNodeCards(); if (zoneLayer) zoneLayer.redraw(); scheduleRecompute();
+  b.textContent = 'Applied';
+});
+
+function renderCalSelects() {
+  const aSel = $('calAnchor'), dSel = $('calDrone'), av = aSel.value, dv = dSel.value;
+  aSel.innerHTML = cfg.anchors.map((a) => `<option value="${esc(a.id)}">Node ${esc(a.id)}</option>`).join('');
+  dSel.innerHTML = cfg.drones.map((d) => `<option value="${esc(d.id)}">${esc(droneName(d))}</option>`).join('');
+  if ([...aSel.options].some((o) => o.value === av)) aSel.value = av;
+  if ([...dSel.options].some((o) => o.value === dv)) dSel.value = dv;
+}
+function renderCalTable() {
+  $('calTable').innerHTML = calPoints.length ? `<table><thead><tr><th>Node</th><th>Distance</th><th>Signal</th><th>From</th><th></th></tr></thead><tbody>` +
+    calPoints.map((p, i) => `<tr><td>${esc(p.anchor)}</td><td>${p.d.toFixed(2)} m</td><td>${p.rssi.toFixed(1)}</td><td>${esc(p.src)}</td>
+      <td><button class="small" data-delcal="${i}" title="Delete">&times;</button></td></tr>`).join('') + '</tbody></table>' : '';
+}
+$('calTable').addEventListener('click', (e) => { const b = e.target.closest('[data-delcal]'); if (b) { calPoints.splice(+b.dataset.delcal, 1); renderCalTable(); drawPlChart(); } });
+$('calHere').onclick = () => {
+  const f = F(); if (!f) { $('calText').textContent = 'Load a flight first.'; return; }
+  const node = $('calAnchor').value, o = f.out[$('calDrone').value];
+  const vals = o ? o.rows.filter((r) => Math.abs(r.t - PH) <= 5000 && r.per[node]).map((r) => r.per[node].rssi) : [];
+  if (!vals.length) { $('calText').textContent = `No signal from node ${node} within 5 s of the playhead for that drone.`; return; }
+  $('calRssi').value = median(vals).toFixed(1);
+  $('calText').textContent = `Median of ${vals.length} readings around ${fmtT(PH - f.t0)}. Enter the tape distance, then Add point.`;
+};
+$('calAdd').onclick = () => {
+  const d = parseFloat($('calDist').value), r = parseFloat($('calRssi').value);
+  if (!(d > 0) || !Number.isFinite(r)) { $('calText').textContent = 'Enter both the distance and the signal.'; return; }
+  calPoints.push({ anchor: $('calAnchor').value, d, rssi: r, n: 1, src: 'tape' });
+  $('calText').textContent = `Added node ${$('calAnchor').value} at ${d} m, ${r} dBm.`; $('calDist').value = ''; $('calRssi').value = '';
+  renderCalTable(); drawPlChart();
+};
+$('calLink').onclick = () => {
+  let added = 0;
+  for (const f of flights) for (const [k, vals] of Object.entries(f.links || {})) {
+    const [rx, tx] = k.split('|'), a = GA.find((x) => x.id === rx), b = GA.find((x) => x.id === tx);
+    if (!a || !b || vals.length < 3) continue;
+    calPoints.push({ anchor: rx, d: Math.hypot(a.p[0] - b.p[0], a.p[1] - b.p[1], a.p[2] - b.p[2]), rssi: median(vals), n: vals.length, src: 'node link' });
+    added++;
+  }
+  $('calText').textContent = added ? `Added ${added} node-to-node point(s). Both antennas sit near the ground, so this link fades faster than one to a drone in the air: a rough check only.`
+                                   : 'No node-to-node readings in the loaded logs.';
+  renderCalTable(); drawPlChart();
+};
+$('fitPts').onclick = () => showFit(fitGroups(calPoints), 'calibration points');
+$('fitGps').onclick = () => showFit(fitGroups(plSamples), `${plSamples.length} readings with GPS`);
+
+// =====================================================================
+// Settings
+// =====================================================================
+function renderSettings() {
+  $('units').value = cfg.units; $('speedSel').value = String(cfg.speed || 4);
+  document.querySelectorAll('[data-s]').forEach((el) => { const k = el.dataset.s; if (el.type === 'checkbox') el.checked = !!cfg[k]; else el.value = cfg[k]; });
+}
+document.querySelectorAll('[data-s]').forEach((el) => el.addEventListener('change', () => {
+  const k = el.dataset.s;
+  if (el.type === 'checkbox') cfg[k] = el.checked;
+  else { const v = Number(el.value); if (Number.isFinite(v) && v > 0) cfg[k] = k === 'winN' ? Math.round(v) : v; else el.value = cfg[k]; }
+  saveCfg(); if (zoneLayer) zoneLayer.redraw();
+  if (k !== 'surveySecs') scheduleRecompute();
+}));
+$('units').onchange = (e) => { cfg.units = e.target.value; saveCfg(); renderAll(); afterData(); };
+$('speedSel').onchange = (e) => { cfg.speed = +e.target.value; saveCfg(); };
+
+// =====================================================================
+// Saving: one ZIP with every CSV, the original logs and the setup
+// =====================================================================
+const q = (v) => v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+const toCSV = (header, rows) => [header, ...rows].map((r) => r.map(q).join(',')).join('\n') + '\n';
+const r6 = (v, d = 3) => v == null || !Number.isFinite(v) ? '' : +v.toFixed(d);
+const safeName = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 60) || 'flight';
+function fixesCSV(f) {
+  const ids = [...new Set(f.rows.flatMap((r) => Object.keys(r.per)))];
+  return toCSV(['flight_time_s', 'in_analysis_window', 'drone', 'drone_id', 'nodes_heard', ...ids.flatMap((id) => [`rssi_${id}_dBm`, `dist_${id}_m`, `ground_dist_${id}_m`]),
+    'radio_x_east_m', 'radio_y_north_m', 'radio_lat', 'radio_lon', 'radio_sigma_m', 'height_m', 'side', 'circles_cross', 'radio_error_vs_gps_m',
+    'gps_lat', 'gps_lon', 'gps_x_east_m', 'gps_y_north_m', 'gps_alt_m', 'gps_sats',
+    'imu_x_east_m', 'imu_y_north_m', 'imu_lat', 'imu_lon', 'imu_from_zero_m', 'imu_error_vs_gps_m',
+    'fused_x_east_m', 'fused_y_north_m', 'fused_lat', 'fused_lon', 'fused_sigma_m', 'fused_error_vs_gps_m', 'raw_x_east_m', 'raw_y_north_m', 'warnings'],
+    f.rows.map((r) => [r6((r.t - f.t0) / 1000), inCrop(f, r.t) ? 1 : 0, r.name, r.drone, r.nA,
+      ...ids.flatMap((id) => r.per[id] ? [r6(r.per[id].rssi, 1), r6(r.per[id].d), r6(r.per[id].rh)] : ['', '', '']),
+      r6(r.ex), r6(r.ey), r6(r.lat, 8), r6(r.lon, 8), r6(r.sig), r6(r.u), r.side, r.ok ? 1 : 0, r6(r.err),
+      r.gps ? r6(r.gps.lat, 8) : '', r.gps ? r6(r.gps.lon, 8) : '', r.gps ? r6(r.gps.x) : '', r.gps ? r6(r.gps.y) : '', r.gps ? r6(r.gps.alt, 2) : '', r.gps ? r.gps.sats : '',
+      r.imu ? r6(r.imu.x) : '', r.imu ? r6(r.imu.y) : '', r.imu ? r6(r.imu.lat, 8) : '', r.imu ? r6(r.imu.lon, 8) : '', r.imu ? r6(r.imu.net) : '', r.imu ? r6(r.imu.err) : '',
+      r.fu ? r6(r.fu.x) : '', r.fu ? r6(r.fu.y) : '', r.fu ? r6(r.fu.lat, 8) : '', r.fu ? r6(r.fu.lon, 8) : '', r.fu ? r6(r.fu.sig) : '', r.fu ? r6(r.fu.err) : '',
+      r6(r.rx), r6(r.ry), r.flags]));
+}
+const imuCSV = (f) => toCSV(['flight_time_s', 'flight', 'drone', 'drone_id', 't_us', 'ax', 'ay', 'az', 'gx', 'gy', 'gz', 'mx', 'my', 'mz', 'roll_deg', 'pitch_deg', 'heading_deg', 'dt_ms', 'overruns',
+  'accel_total', 'motion_accel', 'horizontal_accel', 'vertical_accel', 'still', 'zeroed', 'traveled_m', 'x_forward_m', 'y_left_m', 'imu_x_east_m', 'imu_y_north_m', 'fused_x_east_m', 'fused_y_north_m'],
+  f.imuRows.map((r) => r.map((v, i) => (typeof v === 'number' && i > 4 ? r6(v, 4) : v))));
+const plCSV = () => toCSV(['flight', 'flight_time_s', 'node', 'drone_id', 'rssi_dBm', 'true_distance_m'],
+  flights.flatMap((f) => f.pl.map((p) => [f.name, r6((p.t - f.t0) / 1000), p.anchor, p.drone, p.rssi, r6(p.d)])));
+const summaryCSV = () => toCSV(['flight', 'drone', 'method', 'fixes', 'fixes_with_gps', 'median_error_m', 'rmse_m', 'max_error_m', 'analysis_window_s', 'flight_length_s'],
+  flights.flatMap((f) => cfg.drones.flatMap((dc) => { const st = flightStats(f, dc.id); if (!st.fixes) return [];
+    return METHODS.map(([k, label]) => { const s = st.by[k];
+      return [f.name, droneName(dc), label, st.fixes, s ? s.n : 0, s ? r6(s.med) : '', s ? r6(s.rmse) : '', s ? r6(s.max) : '',
+              r6(((f.crop ? f.crop[1] - f.crop[0] : f.t1 - f.t0)) / 1000, 1), r6((f.t1 - f.t0) / 1000, 1)]; }); })));
+const nodesCSV = () => toCSV(['node', 'lat', 'lon', 'ground_elev_m', 'antenna_height_m', 'set_by', 'accuracy_m', 'signal_at_1m_dBm', 'n'],
+  cfg.anchors.map((a) => [a.id, a.lat, a.lon, a.elev, a.antH, a.src, r6(a.acc, 1), a.A, a.n]));
+const setupJSON = () => JSON.stringify({ cfg, calPoints }, null, 2);
+
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function makeZip(files) {   // files: [{name, text}], stored (no compression)
+  const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+  const d = new Date(), dosT = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), dosD = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  for (const f of files) {
+    const name = enc.encode(f.name), data = enc.encode(f.text), crc = crc32(data);
+    const h = new DataView(new ArrayBuffer(30));
+    [[0, 0x04034b50, 4], [4, 20, 2], [6, 0, 2], [8, 0, 2], [10, dosT, 2], [12, dosD, 2], [14, crc, 4], [18, data.length, 4], [22, data.length, 4], [26, name.length, 2], [28, 0, 2]]
+      .forEach(([o, v, n]) => n === 4 ? h.setUint32(o, v, true) : h.setUint16(o, v, true));
+    parts.push(new Uint8Array(h.buffer), name, data);
+    const c = new DataView(new ArrayBuffer(46));
+    [[0, 0x02014b50, 4], [4, 20, 2], [6, 20, 2], [8, 0, 2], [10, 0, 2], [12, dosT, 2], [14, dosD, 2], [16, crc, 4], [20, data.length, 4], [24, data.length, 4], [28, name.length, 2],
+     [30, 0, 2], [32, 0, 2], [34, 0, 2], [36, 0, 2], [38, 0, 4], [42, off, 4]].forEach(([o, v, n]) => n === 4 ? c.setUint32(o, v, true) : c.setUint16(o, v, true));
+    central.push(new Uint8Array(c.buffer), name);
+    off += 30 + name.length + data.length;
+  }
+  const cdSize = central.reduce((s, p) => s + p.length, 0), e = new DataView(new ArrayBuffer(22));
+  [[0, 0x06054b50, 4], [4, 0, 2], [6, 0, 2], [8, files.length, 2], [10, files.length, 2], [12, cdSize, 4], [16, off, 4], [20, 0, 2]]
+    .forEach(([o, v, n]) => n === 4 ? e.setUint32(o, v, true) : e.setUint16(o, v, true));
+  return new Blob([...parts, ...central, new Uint8Array(e.buffer)], { type: 'application/zip' });
+}
+function downloadBlob(name, blob) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
+const stamp = () => { const d = new Date(), p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}`; };
+
+$('saveBtn').onclick = () => {
+  const files = [{ name: 'summary.csv', text: summaryCSV() }, { name: 'nodes.csv', text: nodesCSV() }, { name: 'signal_vs_gps.csv', text: plCSV() }, { name: 'setup.json', text: setupJSON() }];
+  const used = new Set();
+  for (const f of flights) {
+    let dir = safeName(f.name); while (used.has(dir)) dir += '_'; used.add(dir);
+    files.push({ name: `${dir}/fixes.csv`, text: fixesCSV(f) });
+    if (f.imuRows.length) files.push({ name: `${dir}/imu.csv`, text: imuCSV(f) });
+    for (const fl of f.files) files.push({ name: `${dir}/logs/${safeName(fl.name)}`, text: fl.text });
+  }
+  downloadBlob(`ME74_P2_results_${stamp()}.zip`, makeZip(files));
+};
+$('saveSetup').onclick = () => downloadBlob(`p2_setup_${stamp()}.json`, new Blob([setupJSON()], { type: 'application/json' }));
+$('loadSetup').onclick = () => $('setupFile').click();
+$('setupFile').onchange = async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  try {
+    const o = JSON.parse(await file.text()); cfg = mergeCfg(o.cfg || o);
+    if (Array.isArray(o.calPoints)) { calPoints.length = 0; calPoints.push(...o.calPoints); }
+    saveCfg(); rebuildGeometry(); renderAll(); syncNodeMarkers(); flyToNodes(); recomputeAll();
+  } catch (err) { setHint('Could not read that setup file: ' + err.message, 'bad'); }
+  e.target.value = '';
+};
+$('removeFlight').onclick = () => { if (!F()) return; flights.splice(selF, 1); selF = flights.length - 1; plSamples = flights.flatMap((x) => x.pl); if (F()) setPH(F().t0); afterData(); };
+$('clearFlights').onclick = () => { flights.length = 0; selF = -1; plSamples = []; playing = false; afterData(); };
+
+// =====================================================================
+// Loading logs: file picker, drag and drop, or straight from a drone over USB
+// =====================================================================
+async function loadFiles(list) {
+  const parsed = [], bad = [];
+  for (const file of list) {
+    const text = await file.text(), pf = parseLog(file.name, text);
+    if (pf.lines.length) parsed.push(pf); else bad.push(file.name);
+  }
+  if (!parsed.length) { setHint(`No readable lines in ${bad.join(', ')}. See More, Log format.`, 'bad'); return; }
+  loadParsed(parsed);
+  if (bad.length) setHint(`Skipped ${bad.join(', ')}: no readable lines.`, 'warn');
+}
+function loadParsed(parsed, name) {
+  playing = false;
+  addFlight(parsed, name);
+  afterData(); showTab('flight'); fitAll(false);
+}
+$('loadBtn').onclick = () => $('logFiles').click();
+$('logFiles').onchange = (e) => { if (e.target.files.length) loadFiles([...e.target.files]); e.target.value = ''; };
+let dragDepth = 0;
+window.addEventListener('dragenter', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; $('dropHint').classList.add('show'); } });
+window.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('dropHint').classList.remove('show'); });
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => { e.preventDefault(); dragDepth = 0; $('dropHint').classList.remove('show'); if (e.dataTransfer.files.length) loadFiles([...e.dataTransfer.files]); });
+
+// Web Serial: only for the GPS board during "Set node" and for copying a log off a drone
+const ports = [], gpsSeen = {};
+async function connectSerial() {
+  if (!('serial' in navigator)) { setHint("This browser can't talk to USB boards. Open this file in Chrome or Edge.", 'bad'); return false; }
+  let port;
+  try { port = await navigator.serial.requestPort(); await port.open({ baudRate: +$('baud').value }); }
+  catch (e) { if (e.name !== 'NotFoundError') logLine('[dash] Connect failed: ' + e.message); return false; }
+  const entry = { port, label: 'board' + (ports.length + 1), writer: port.writable.getWriter(), reader: null };
+  ports.push(entry); logLine(`[dash] Connected ${entry.label}`); updateConn();
+  readLoop(entry); return true;
+}
+async function readLoop(entry) {
+  const dec = new TextDecoderStream(); entry.port.readable.pipeTo(dec.writable).catch(() => {});
+  entry.reader = dec.readable.getReader(); let buf = '';
+  try {
+    while (true) {
+      const { value, done } = await entry.reader.read(); if (done) break;
+      buf += value; let i;
+      while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i).replace(/\r$/, ''); buf = buf.slice(i + 1); if (line.trim()) handleLiveLine(line); }
+      if (buf.length > 100000) buf = '';
+    }
+  } catch (e) { logLine(`[dash] ${entry.label} read error: ${e.message}`); }
+  finally { closeEntry(entry); }
+}
+async function closeEntry(entry) {
+  const i = ports.indexOf(entry); if (i < 0) return; ports.splice(i, 1);
+  try { if (entry.reader) await entry.reader.cancel(); } catch (e) {}
+  try { entry.writer.releaseLock(); } catch (e) {}
+  try { await entry.port.close(); } catch (e) {}
+  logLine(`[dash] ${entry.label} disconnected`); updateConn();
+}
+if ('serial' in navigator) navigator.serial.addEventListener('disconnect', (e) => { const en = ports.find((p) => p.port === e.target); if (en) closeEntry(en); });
+async function sendAll(text) { for (const p of ports) { try { await p.writer.write(new TextEncoder().encode(text + '\n')); } catch (e) {} } logLine('> ' + text); }
+function updateConn() {
+  $('connBtn').textContent = ports.length ? 'Disconnect' : 'Connect a board';
+  $('connInfo').textContent = ports.length ? `${ports.length} board${ports.length > 1 ? 's' : ''} connected` : '';
+  $('gpsConnBtn').textContent = ports.length ? 'GPS board connected' : 'connect GPS board';
+}
+$('connBtn').onclick = () => (ports.length ? [...ports].forEach(closeEntry) : connectSerial());
+let lastDumpOk = null;   // name of the last log read off a drone this session
+$('listBtn').onclick = async () => { if (!ports.length && !(await connectSerial())) return; sendAll('list'); showTab('more'); };
+$('eraseBtn').onclick = async () => {
+  if (!ports.length && !(await connectSerial())) return;
+  const msg = lastDumpOk ? `Erase every log on the drone? The last one read (${lastDumpOk}) is saved on this laptop.`
+                         : 'No log has been read off a drone in this session. Erase every log on the drone anyway? This cannot be undone.';
+  if (!confirm(msg)) return;
+  sendAll('eraseall'); showTab('more');
+};
+$('gpsConnBtn').onclick = () => { if (!ports.length) connectSerial(); };
+$('cmdSend').onclick = () => { const v = $('cmdIn').value.trim(); if (v) { sendAll(v); $('cmdIn').value = ''; } };
+$('cmdIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('cmdSend').click(); });
+function handleLiveLine(line) {
+  if (dump) {
+    if (/^\s*(END|DUMP_END|END_DUMP)\s*$/i.test(line)) finishDump(false);
+    else { dump.lines.push(line); dump.last = Date.now(); }
+    return;
+  }
+  const now = Date.now(), tm = line.trim().match(/^\[([A-Za-z0-9_]+)\]\s?(.*)$/), s = (tm ? tm[2] : line).trim();
+  if (s.startsWith('{')) {
+    let m = null; try { m = JSON.parse(s); } catch (e) {}
+    if (m && m.type === 'status') {
+      const fix = m.state === 'fix' && Number.isFinite(m.lat) && Number.isFinite(m.lon);
+      gpsSeen['GPS board'] = { t: now, fix, lat: m.lat, lon: m.lon, sats: m.sats };
+      if (fix) surveyFeed('GPS board', m.lat, m.lon, Number.isFinite(m.alt) ? m.alt : NaN, m.sats);
+      if ($('showData').checked) logLine(line);
+      return;
+    }
+  }
+  const p = s.split(',').map((x) => x.trim());
+  if ((p[0] || '').toUpperCase() === 'GPS' && p.length >= 4) {
+    const lat = Number(p[2]), lon = Number(p[3]), fix = Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0);
+    gpsSeen[p[1]] = { t: now, fix, lat, lon, sats: Number(p[5]) };
+    if (fix) surveyFeed(p[1], lat, lon, Number(p[4]), Number(p[5]));
+    if ($('showData').checked) logLine(line);
+    return;
+  }
+  if (!/^\s*\[?IMU/i.test(line) || $('showData').checked) logLine(line);
+}
+let dump = null;
+$('readBtn').onclick = async () => {
+  if (dump) { finishDump(true); return; }
+  if (!ports.length && !(await connectSerial())) return;
+  dump = { lines: [], start: Date.now(), last: Date.now() };
+  await sendAll('dump'); updateTop();
+};
+function finishDump(cancel) {
+  const dd = dump; dump = null; updateTop();
+  if (cancel) { setHint('Stopped reading the log.', 'warn'); return; }
+  if (!dd.lines.length) { setHint('The drone didn\'t send a log. Its firmware needs a "dump" command that prints the saved lines, then END.', 'bad'); return; }
+  const name = `drone_log_${stamp()}.txt`, text = dd.lines.join('\n');
+  downloadBlob(name, new Blob([text + '\n'], { type: 'text/plain' }));   // keep a copy on the laptop
+  const pf = parseLog(name, text);
+  if (!pf.lines.length) { setHint('Got text from the drone, but no log lines in it. See More, Log format.', 'bad'); return; }
+  loadParsed([pf]);
+  lastDumpOk = name;
+  setHint(`Read ${pf.lines.length.toLocaleString()} lines and saved ${name} to Downloads. Once you've checked it, "Erase logs on drone" (More tab) frees the drone's memory.`, 'ok', 'Done:');
+}
+
+// =====================================================================
+// Demo flight: writes two fake drone logs and loads them
+// =====================================================================
+// Drone 1's log uses the new format; drone 2's uses the existing ME74 firmware printout (with times added),
+// and the two drones' clocks start at different values, so the demo also exercises the GPS-time line-up.
+function ensureDemoNodes() {
+  if (cfg.anchors.filter(isSet).length >= 2) return false;
+  const a = cfg.anchors[0], b = cfg.anchors[1];
+  Object.assign(a, { lat: 42.40750, lon: -71.11970, elev: 20, src: 'demo', acc: null });
+  Object.assign(b, { lat: 42.40758, lon: -71.11928, elev: 20.4, src: 'demo', acc: null });
+  saveCfg(); rebuildGeometry(); renderAll(); syncNodeMarkers();
+  return true;
+}
+function demoFlight() {
+  const placed = ensureDemoNodes(); rebuildGeometry();
+  if (!BASE) { setHint('The demo needs two nodes at different spots.', 'bad'); return; }
+  const dur = 150, utc0 = (15 * 3600 + 30 * 60) * 1000, boot = [4000, 61234];
+  const B = cfg.drones.map((dc, i) => noseBearing(dc, simTruth(i, 0)));
+  const hms = (ms) => { const s = ms / 1000, h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60; return [h, m, sec]; };
+  const texts = cfg.drones.map(() => []);
+  for (let ms = 0; ms <= dur * 1000; ms += 20) {
+    const ts = ms / 1000;
+    cfg.drones.forEach((dc, i) => {
+      const L = texts[i], T = boot[i] + ms, legacy = i === 1, u = dc.alt;
+      const p0 = simTruth(i, ts - 0.02), p1 = simTruth(i, ts), p2 = simTruth(i, ts + 0.02);
+      const aE = (p2[0] - 2 * p1[0] + p0[0]) / 0.0004, aN = (p2[1] - 2 * p1[1] + p0[1]) / 0.0004;
+      const ax = aE * Math.sin(B[i]) + aN * Math.cos(B[i]) + 0.03 + 0.08 * gauss(), ay = -aE * Math.cos(B[i]) + aN * Math.sin(B[i]) - 0.02 + 0.08 * gauss();
+      const g = () => (0.004 * gauss()).toFixed(5);
+      const log = `LOG,${T * 1000},${ax.toFixed(4)},${ay.toFixed(4)},${(G0 + 0.08 * gauss()).toFixed(4)},${g()},${g()},${g()},0,0,0,0.000,0.000,0.000,20.000,0`;
+      L.push(legacy ? `${T},[IMU] ${log}` : `${T},IMU,${dc.id},${log.slice(4)}`);
+      if (ms % 200 === 0) GA.forEach((a, k) => {
+        if (Math.random() < 0.05) return;
+        const dist = Math.max(0.3, Math.hypot(p1[0] - a.p[0], p1[1] - a.p[1], u - a.p[2]));
+        const rssi = Math.round(a.A - 10 * a.n * Math.log10(dist) + gauss() * cfg.simNoise);
+        if (legacy) { L.push(`${T},[LORA] RX from node ${k + 1}`); L.push(`${T},[LORA] RSSI: ${rssi} dBm`); L.push(`${T},[LORA] SNR: 7.5 dB`); }
+        else L.push(`${T},RSSI,${a.id},${dc.id},${rssi},7.5`);
+      });
+      if (ms % 1000 === 0) {
+        const gp = fromENU(p1[0] + gauss(), p1[1] + gauss(), u + gauss() * 1.5), [h, m, s] = hms(utc0 + ms + 80);
+        if (legacy) L.push(`${T},[GPS] {"type":"status","state":"fix","sats":9,"hdop":0.9,"lat":${gp[0].toFixed(7)},"lon":${gp[1].toFixed(7)},"speed":0,"utc":"${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${s.toFixed(2).padStart(5, '0')}"}`);
+        else L.push(`${T},GPS,${dc.id},${gp[0].toFixed(7)},${gp[1].toFixed(7)},${gp[2].toFixed(1)},9,0.9,${String(h).padStart(2, '0')}${String(m).padStart(2, '0')}${s.toFixed(2).padStart(5, '0')}`);
+      }
+    });
+  }
+  loadParsed(cfg.drones.map((dc, i) => parseLog(`demo_${safeName(droneName(dc))}.txt`, texts[i].join('\n'))), 'Demo flight');
+  if (placed) setHint('Demo flight loaded. The demo put two nodes on Tufts campus; press Set node at your real nodes before loading real logs.', 'warn');
+}
+$('demoBtn').onclick = demoFlight;
+
+// Demo flight paths. Both drones sit still for 5 s first so their IMUs can zero.
+// Drone 1 flies a rectangle and stops 2 s at each corner (lets the IMU's still-detection fix drift).
+// Drone 2 circles without stopping (IMU drift keeps growing; radio + IMU should hold it).
+function simTruth(i, t) {
+  const a = GA[0].p, b = GA[1].p, mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], ux = BASE.ux, uy = BASE.uy, L = BASE.L;
+  const tt = Math.max(0, t - 5);
+  let u, v;
+  if (i === 0) {
+    const w = Math.max(10, L * 0.8), h = Math.max(8, L * 0.4), off = Math.max(6, L * 0.25);
+    const C = [[-w / 2, off], [w / 2, off], [w / 2, off + h], [-w / 2, off + h]];
+    const legs = C.map((c, k) => { const nx = C[(k + 1) % 4]; return { c, nx, T: Math.hypot(nx[0] - c[0], nx[1] - c[1]) / 2 }; });
+    let tau = tt % legs.reduce((s, l) => s + l.T + 2, 0); [u, v] = C[0];
+    for (const l of legs) {
+      if (tau < l.T) { const x = tau / l.T, sm = x * x * (3 - 2 * x); u = l.c[0] + (l.nx[0] - l.c[0]) * sm; v = l.c[1] + (l.nx[1] - l.c[1]) * sm; break; }
+      tau -= l.T; if (tau < 2) { [u, v] = l.nx; break; } tau -= 2;
+    }
+  } else {
+    const R = Math.max(6, L * 0.3), w = 2.5 / R, k = 1.5, th = w * (tt - k * (1 - Math.exp(-tt / k)));
+    u = R * Math.cos(th) - L * 0.15; v = Math.max(10, L * 0.6) + R * Math.sin(th);
+  }
+  return [mid[0] + u * ux[0] + v * uy[0], mid[1] + u * ux[1] + v * uy[1]];
+}
+
+// =====================================================================
+// Map (Leaflet + Esri imagery)
+// =====================================================================
+const map = L.map('map', { zoomControl: true, maxZoom: 22, worldCopyJump: true }).setView([42.4075, -71.1190], 17);
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+const layers = {
+  sat: L.tileLayer(ESRI + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxNativeZoom: 19, maxZoom: 22, attribution: 'Imagery: Esri, Maxar, Earthstar Geographics' }),
+  street: L.tileLayer(ESRI + 'World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxNativeZoom: 19, maxZoom: 22, attribution: 'Map: Esri, HERE, Garmin, OpenStreetMap contributors' }),
+};
+let tileOk = 0, tileErr = 0;
+for (const l of Object.values(layers)) { l.on('tileload', () => tileOk++); l.on('tileerror', () => tileErr++); }
+function setLayer(k) {
+  cfg.layer = k; saveCfg();
+  for (const [name, l] of Object.entries(layers)) { if (name === k) l.addTo(map); else map.removeLayer(l); }
+  $('lySat').classList.toggle('on', k === 'sat'); $('lyStreet').classList.toggle('on', k === 'street');
+}
+$('lySat').onclick = () => setLayer('sat'); $('lyStreet').onclick = () => setLayer('street');
+L.control.scale({ position: 'topleft' }).addTo(map);
+
+// nodes
+const nodeMarkers = [];
+function syncNodeMarkers() {
+  while (nodeMarkers.length > cfg.anchors.length) map.removeLayer(nodeMarkers.pop());
+  cfg.anchors.forEach((a, i) => {
+    let m = nodeMarkers[i];
+    if (!isSet(a)) { if (m) { map.removeLayer(m); nodeMarkers[i] = null; } return; }
+    const icon = L.divIcon({ className: '', html: `<div class="nodeMk drag" style="--c:${anchorColor(i)}">${esc(a.id)}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+    if (!m) {
+      m = L.marker([a.lat, a.lon], { icon, draggable: true, zIndexOffset: 1000, autoPan: true });
+      m.on('dragend', () => { const ll = m.getLatLng(); setAnchorPos(i, ll.lat, ll.lng, 'map', null, null); jobMsg(i, 'Moved on the map.'); });
+      m.addTo(map); nodeMarkers[i] = m;
+    } else { m.setLatLng([a.lat, a.lon]); m.setIcon(icon); }
+    m.unbindTooltip().bindTooltip(`Node ${esc(a.id)}, drag to adjust`, { direction: 'top', offset: [0, -12] });
+  });
+}
+// drones
+const droneLayers = {};
+function rebuildDroneMarkers() { for (const k of Object.keys(droneLayers)) { droneLayers[k].group.remove(); delete droneLayers[k]; } }
+function droneLayer(dc, i) {
+  if (droneLayers[dc.id]) return droneLayers[dc.id];
+  const col = colorOf(droneColor(i)), group = L.layerGroup().addTo(map);
+  const o = {
+    group, col,
+    gpsTrack: L.polyline([], { color: col, weight: 2, opacity: 0.85, dashArray: '6 6', interactive: false }).addTo(group),
+    track: L.polyline([], { color: col, weight: 3.5, opacity: 0.95, interactive: false }).addTo(group),
+    acc: L.circle([0, 0], { radius: 1, color: col, weight: 1, opacity: 0.7, fillColor: col, fillOpacity: 0.12, interactive: false }),
+    imuTrack: L.polyline([], { color: col, weight: 3, opacity: 1, dashArray: '1 7', lineCap: 'round', interactive: false }),
+    fusedTrack: L.polyline([], { color: col, weight: 2.5, opacity: 1, dashArray: '14 6', interactive: false }),
+    imuDot: L.circleMarker([0, 0], { radius: 5, color: col, weight: 2.5, fillColor: '#fff', fillOpacity: 1 }),
+    fusedDot: L.circleMarker([0, 0], { radius: 5, color: '#fff', weight: 2, fillColor: col, fillOpacity: 1 }),
+    gps: L.circleMarker([0, 0], { radius: 7, color: '#fff', weight: 2.5, fill: false, interactive: false }),
+    gpsIn: L.circleMarker([0, 0], { radius: 5, color: col, weight: 2, fill: false, interactive: false }),
+    mirror: L.circleMarker([0, 0], { radius: 5, color: col, weight: 1.5, dashArray: '2 3', fill: false, interactive: false }),
+    rings: [],
+    marker: L.marker([0, 0], { zIndexOffset: 2000 }),
+  };
+  return (droneLayers[dc.id] = o);
+}
+function showLayer(o, layer, on) { const has = o.group.hasLayer(layer); if (on && !has) o.group.addLayer(layer); if (!on && has) o.group.removeLayer(layer); }
+
+function trailOf(arr) {
+  const i = idxAt(arr, PH); if (i < 0) return [];
+  const j = cfg.trail ? Math.max(0, idxAt(arr, PH - cfg.trail * 1000) + 1) : 0;
+  return arr.slice(j, i + 1);
+}
+function currentPoints() {
+  const f = F(), pts = []; if (!f) return pts;
+  for (const o of Object.values(f.out)) {
+    const ri = idxAt(o.rows, PH); if (ri >= 0 && PH - o.rows[ri].t < 3000) pts.push([o.rows[ri].lat, o.rows[ri].lon]);
+    const gi = idxAt(o.gps, PH); if (gi >= 0 && PH - o.gps[gi].t < 3000) pts.push([o.gps[gi].lat, o.gps[gi].lon]);
+  }
+  return pts;
+}
+function updateMapLayers() {
+  mapDirty = false;
+  const f = F(), T = cfg.tracks;
+  cfg.drones.forEach((dc, i) => {
+    const o = f && f.out[dc.id], Ly = droneLayer(dc, i);
+    if (!o) { Ly.group.clearLayers(); Ly.rings = []; return; }
+    const rows = trailOf(o.rows), gps = trailOf(o.gps), imu = trailOf(o.imuPath);
+    Ly.track.setLatLngs(T.radio ? rows.map((r) => [r.lat, r.lon]) : []); showLayer(Ly, Ly.track, T.radio);
+    Ly.fusedTrack.setLatLngs(T.fused ? rows.filter((r) => r.fu).map((r) => [r.fu.lat, r.fu.lon]) : []); showLayer(Ly, Ly.fusedTrack, T.fused);
+    Ly.gpsTrack.setLatLngs(T.gps ? gps.map((p) => [p.lat, p.lon]) : []); showLayer(Ly, Ly.gpsTrack, T.gps);
+    Ly.imuTrack.setLatLngs(T.imu ? imu.map((p) => [p.lat, p.lon]) : []); showLayer(Ly, Ly.imuTrack, T.imu);
+    const ri = idxAt(o.rows, PH), r = ri >= 0 && PH - o.rows[ri].t < 3000 ? o.rows[ri] : null;
+    const g = gps.length && PH - gps[gps.length - 1].t < 3000 ? gps[gps.length - 1] : null;
+    const ip = imu.length && PH <= o.imuEnd + 1500 ? imu[imu.length - 1] : null;
+    // radio marker (labeled) + expected accuracy
+    if (T.radio && r) {
+      Ly.marker.setLatLng([r.lat, r.lon]);
+      Ly.marker.setIcon(Ly.icon || (Ly.icon = L_icon(dc, i)));
+      Ly.acc.setLatLng([r.lat, r.lon]); Ly.acc.setRadius(Math.min(Math.max(r.sig, 0.5), 500));
+      Ly.marker.unbindTooltip().bindTooltip(`<b>${esc(droneName(dc))}, radio</b><br>${r.lat.toFixed(7)}, ${r.lon.toFixed(7)}<br>&plusmn;${fL(r.sig, 0)}${r.err != null ? `, ${fL(r.err)} from its GPS` : ''}`, { direction: 'right', offset: [14, 0] });
+    }
+    showLayer(Ly, Ly.marker, !!(T.radio && r)); showLayer(Ly, Ly.acc, !!(T.radio && r && r.sig < 500));
+    // when there is no radio fix, label the GPS position instead
+    if (!(T.radio && r) && g) { Ly.marker.setLatLng([g.lat, g.lon]); Ly.marker.setIcon(Ly.icon || (Ly.icon = L_icon(dc, i))); showLayer(Ly, Ly.marker, true); }
+    if (T.gps && g) { Ly.gps.setLatLng([g.lat, g.lon]); Ly.gpsIn.setLatLng([g.lat, g.lon]); }
+    showLayer(Ly, Ly.gps, !!(T.gps && g)); showLayer(Ly, Ly.gpsIn, !!(T.gps && g));
+    if (T.fused && r && r.fu) { Ly.fusedDot.setLatLng([r.fu.lat, r.fu.lon]);
+      Ly.fusedDot.unbindTooltip().bindTooltip(`<b>${esc(droneName(dc))}, radio + IMU</b><br>&plusmn;${fL(r.fu.sig, 0)}${r.fu.err != null ? `, ${fL(r.fu.err)} from its GPS` : ''}`, { direction: 'right', offset: [8, 0] }); }
+    showLayer(Ly, Ly.fusedDot, !!(T.fused && r && r.fu));
+    if (T.imu && ip) { Ly.imuDot.setLatLng([ip.lat, ip.lon]);
+      Ly.imuDot.unbindTooltip().bindTooltip(`<b>${esc(droneName(dc))}, IMU only</b>${r && r.imu && r.imu.err != null ? `<br>${fL(r.imu.err)} from its GPS` : ''}`, { direction: 'right', offset: [8, 0] }); }
+    showLayer(Ly, Ly.imuDot, !!(T.imu && ip));
+    // distance circles around each node, and the mirror-image spot
+    while (Ly.rings.length) Ly.group.removeLayer(Ly.rings.pop());
+    if (cfg.circles && r) for (const [id, m] of Object.entries(r.per)) {
+      const a = cfg.anchors.find((x) => x.id === id); if (!a || !isSet(a)) continue;
+      Ly.rings.push(L_circle([a.lat, a.lon], Math.max(m.rh, 0.1), Ly.col).addTo(Ly.group));
+    }
+    if (cfg.circles && r && r.altLL) Ly.mirror.setLatLng(r.altLL);
+    showLayer(Ly, Ly.mirror, !!(cfg.circles && r && r.altLL));
+  });
+  updateMapMsg();
+}
+const L_icon = (dc, i) => L.divIcon({ className: '', html: `<div class="droneMk" style="--c:${droneColor(i)}"><i></i><b>${esc(droneName(dc))}</b></div>`, iconSize: [18, 18], iconAnchor: [9, 9] });
+const L_circle = (ll, r, col) => L.circle(ll, { radius: r, color: col, weight: 1.5, opacity: 0.8, dashArray: '5 7', fill: false, interactive: false });
+
+// best-zone shading (custom canvas layer)
+const ZoneLayer = L.Layer.extend({
+  onAdd(m) { this._c = L.DomUtil.create('canvas', ''); this._c.style.pointerEvents = 'none'; m.getPanes().overlayPane.appendChild(this._c); m.on('moveend zoomend resize', this.redraw, this); this.redraw(); },
+  onRemove(m) { L.DomUtil.remove(this._c); m.off('moveend zoomend resize', this.redraw, this); },
+  redraw() {
+    const m = this._map; if (!m) return;
+    const size = m.getSize(), c = this._c; L.DomUtil.setPosition(c, m.containerPointToLayerPoint([0, 0]));
+    c.width = size.x; c.height = size.y; c.style.width = size.x + 'px'; c.style.height = size.y + 'px';
+    const ctx = c.getContext('2d'); ctx.clearRect(0, 0, size.x, size.y);
+    if (!REF || GA.length < 2) return;
+    const cell = 12, hgt = cfg.drones[0] ? cfg.drones[0].alt : 10, rgb = cssVar('--zone');
+    for (let py = 0; py < size.y; py += cell) for (let px = 0; px < size.x; px += cell) {
+      const ll = m.containerPointToLatLng([px + cell / 2, py + cell / 2]), p = toENU(ll.lat, ll.lng, REF.h), e = expectedError(p[0], p[1], hgt);
+      const al = e < 5 ? 0.42 : e < 10 ? 0.27 : e < 20 ? 0.13 : 0;
+      if (al) { ctx.fillStyle = `rgba(${rgb},${al})`; ctx.fillRect(px, py, cell, cell); }
+    }
+  },
+});
+function expectedError(x, y, hgt) {
+  let a11 = 0, a12 = 0, a22 = 0;
+  for (const a of GA) {
+    const dx = x - a.p[0], dy = y - a.p[1], rh = Math.hypot(dx, dy), d = Math.hypot(rh, hgt - a.p[2]); if (rh < 0.05) continue;
+    const sh = rangeSigma(d, a, cfg.winN) * d / Math.max(rh, 1), w = 1 / (sh * sh), jx = dx / rh, jy = dy / rh;
+    a11 += w * jx * jx; a12 += w * jx * jy; a22 += w * jy * jy;
+  }
+  const det = a11 * a22 - a12 * a12; return det > 1e-12 ? Math.sqrt((a11 + a22) / det) : Infinity;
+}
+let zoneLayer = null;
+function setZones(on) { cfg.zones = on; saveCfg(); $('zonesBtn').classList.toggle('on', on); if (on && !zoneLayer) zoneLayer = new ZoneLayer().addTo(map); if (!on && zoneLayer) { map.removeLayer(zoneLayer); zoneLayer = null; } renderLegends(); }
+$('zonesBtn').onclick = () => setZones(!cfg.zones);
+const TRAILS = [[30, 'Trail: 30 s'], [120, 'Trail: 2 min'], [0, 'Trail: whole flight']];
+if (!TRAILS.some((t) => t[0] === cfg.trail)) cfg.trail = 30;
+function renderTrailBtn() { $('trailBtn').textContent = (TRAILS.find((t) => t[0] === cfg.trail) || TRAILS[0])[1]; }
+$('trailBtn').onclick = () => { const i = TRAILS.findIndex((t) => t[0] === cfg.trail); cfg.trail = TRAILS[(i + 1) % TRAILS.length][0]; saveCfg(); renderTrailBtn(); mapDirty = true; };
+function renderTrackBtns() { document.querySelectorAll('#trackSeg [data-track]').forEach((b) => b.classList.toggle('on', !!cfg.tracks[b.dataset.track])); }
+$('trackSeg').addEventListener('click', (e) => { const b = e.target.closest('[data-track]'); if (!b) return; const k = b.dataset.track;
+  cfg.tracks[k] = !cfg.tracks[k]; saveCfg(); renderTrackBtns(); renderLegends(); drawErrChart(); mapDirty = true; });
+$('circlesBtn').onclick = () => { cfg.circles = !cfg.circles; saveCfg(); $('circlesBtn').classList.toggle('on', cfg.circles); renderLegends(); mapDirty = true; };
+// follow / fit
+let follow = false, lastFollow = 0;
+function followOn() { follow = true; $('followBtn').classList.add('on'); fitAll(true, 'now'); }
+function followOff() { follow = false; $('followBtn').classList.remove('on'); }
+$('followBtn').onclick = () => (follow ? followOff() : followOn());
+$('fitBtn').onclick = () => fitAll(true);
+map.on('dragstart', followOff);
+map.on('zoomstart', (e) => { if (!programmaticMove) followOff(); });
+let programmaticMove = false;
+function boundsOfAll(withDrones) {
+  const pts = cfg.anchors.filter(isSet).map((a) => [a.lat, a.lon]);
+  const f = F();
+  if (withDrones === 'now' && f) { for (const p of currentPoints()) pts.push(p); }
+  else if (withDrones && f) for (const o of Object.values(f.out || {})) {
+    const arr = [...o.rows, ...o.gps], step = Math.max(1, Math.floor(arr.length / 400));
+    for (let k = 0; k < arr.length; k += step) pts.push([arr[k].lat, arr[k].lon]);
+  }
+  return pts;
+}
+function fitAll(animate, mode = true) {
+  const pts = boundsOfAll(mode); if (!pts.length) return;
+  programmaticMove = true;
+  if (pts.length === 1) map.setView(pts[0], Math.max(map.getZoom(), 19), { animate: !!animate });
+  else map.fitBounds(L.latLngBounds(pts).pad(0.25), { maxZoom: 20, animate: !!animate });
+  setTimeout(() => { programmaticMove = false; }, 400);
+}
+function flyToNodes() { const pts = boundsOfAll(false); if (!pts.length) return; programmaticMove = true;
+  if (pts.length === 1) map.setView(pts[0], 19); else map.fitBounds(L.latLngBounds(pts).pad(0.4), { maxZoom: 20 });
+  setTimeout(() => { programmaticMove = false; }, 400); }
+
+function updateMapMsg() {
+  const el = $('mapMsg'); let t = '';
+  if (!cfg.anchors.some(isSet) && !flights.length) t = 'No nodes yet. At the field, press "Set node" at each node (Setup panel), or try Demo flight.';
+  else if (!flights.length) t = 'Load a flight: drag the drones\' log files onto the page.';
+  else if (tileErr > 4 && tileOk === 0) t = 'No map imagery (offline?). Positions still work. Open this page once with internet to cache the imagery.';
+  el.textContent = t; el.style.display = t ? 'block' : 'none';
+}
+function renderLegends() {
+  const dr = cfg.drones.map((d, i) => `<span><span class="sw dot" style="background:${droneColor(i)}"></span>${esc(droneName(d))}</span>`).join('');
+  const an = cfg.anchors.map((a, i) => `<span><span class="sw sq" style="background:${anchorColor(i)}"></span>Node ${esc(a.id)}</span>`).join('');
+  const T = cfg.tracks;
+  $('mapLegend').innerHTML = `<div class="legend">${an}${dr}</div><div class="legend" style="margin-top:4px;color:var(--muted)">
+    ${T.radio ? '<span>solid line + labeled dot: radio</span>' : ''}${T.gps ? '<span>short dashes + ring: GPS</span>' : ''}
+    ${T.imu ? '<span>dotted + white dot: IMU only</span>' : ''}${T.fused ? '<span>long dashes + small dot: radio + IMU</span>' : ''}
+    ${T.radio ? '<span>shaded circle: expected accuracy</span>' : ''}
+    ${cfg.circles ? '<span>dashed circles: distance from each node, dotted ring: mirror spot</span>' : ''}
+    ${cfg.zones ? '<span><span class="sw sq" style="background:rgba(124,58,237,.45)"></span>best zones: under 5 / 10 / 20 m expected error</span>' : ''}</div>`;
+  const dash = (d) => `<svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="currentColor" stroke-width="2" stroke-linecap="round" ${d ? `stroke-dasharray="${d}"` : ''}/></svg>`;
+  $('errLegend').innerHTML = dr + (T.radio ? `<span>${dash('')}radio</span>` : '') + (T.imu ? `<span>${dash('1 4')}IMU only</span>` : '') + (T.fused ? `<span>${dash('8 4')}radio + IMU</span>` : '');
+  $('plLegend').innerHTML = an;
+}
+
+// =====================================================================
+// Charts
+// =====================================================================
+let errHover = null, plHover = null;
+function sizeCanvas(c) {
+  const dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0); return [w, h];
+}
+const niceStep = (span) => { const raw = span / 5, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p; };
+const chartC = () => ({ text: cssVar('--text'), muted: cssVar('--muted'), line: cssVar('--line'), grid: cssVar('--grid'), card: cssVar('--card') });
+function emptyChart(ctx, W, H, C, msg) { ctx.fillStyle = C.muted; ctx.font = '13px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.fillText(msg, W / 2, H / 2); ctx.textAlign = 'left'; }
+
+// Error over the whole flight, with the playhead and the analysis window
+let errGeom = null;
+function drawErrChart() {
+  const c = $('errChart'); if (!c.clientWidth) return;
+  const [W, H] = sizeCanvas(c), ctx = c.getContext('2d'), C = chartC(); ctx.clearRect(0, 0, W, H);
+  const f = F(), pad = { l: 44, r: 8, t: 8, b: 22 };
+  errGeom = null;
+  if (!f) { emptyChart(ctx, W, H, C, 'Load a flight'); return; }
+  const series = [];
+  cfg.drones.forEach((dc, i) => {
+    const o = f.out[dc.id]; if (!o) return;
+    for (const [k, label, fn, dsh] of [['radio', 'radio', (r) => r.err, []], ['imu', 'IMU only', (r) => (r.imu ? r.imu.err : null), [1, 4]], ['fused', 'radio + IMU', (r) => (r.fu ? r.fu.err : null), [8, 4]]]) {
+      if (!cfg.tracks[k]) continue;
+      const pts = o.rows.map((r) => ({ t: r.t, e: fn(r) })).filter((p) => p.e != null);
+      if (pts.length) series.push({ name: `${droneName(dc)} ${label}`, col: colorOf(droneColor(i)), pts, dsh });
+    }
+  });
+  const span = Math.max(1, f.t1 - f.t0), X = (t) => pad.l + (t - f.t0) / span * (W - pad.l - pad.r);
+  errGeom = { X, pad, W, f, span };
+  const all = series.flatMap((s) => s.pts.map((p) => p.e * uk()));
+  if (!all.length) {
+    emptyChart(ctx, W, H, C, 'Needs radio and GPS from the same drone');
+  } else {
+    const sorted = [...all].sort((a, b) => a - b), ymax = Math.max(5, sorted[Math.floor(sorted.length * 0.98)] * 1.15);
+    const Y = (v) => H - pad.b - Math.min(v, ymax) / ymax * (H - pad.t - pad.b);
+    const st = niceStep(ymax); ctx.strokeStyle = C.grid; ctx.fillStyle = C.muted; ctx.font = '11px -apple-system, sans-serif';
+    for (let v = 0; v <= ymax; v += st) { ctx.beginPath(); ctx.moveTo(pad.l, Y(v)); ctx.lineTo(W - pad.r, Y(v)); ctx.stroke(); ctx.fillText(`${+v.toFixed(1)} ${us()}`, 2, Y(v) + 4); }
+    const tStep = niceStep(span / 60000) * 60000 || 60000;
+    for (let t = 0; t <= span; t += Math.max(tStep, 30000)) ctx.fillText(fmtT(t), X(f.t0 + t) - 10, H - 5);
+    ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, H - pad.b); ctx.lineTo(W - pad.r, H - pad.b); ctx.stroke();
+    for (const s of series) { if (s.pts.length < 2) continue; ctx.strokeStyle = s.col; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash(s.dsh); ctx.beginPath();
+      s.pts.forEach((p, k) => k ? ctx.lineTo(X(p.t), Y(p.e * uk())) : ctx.moveTo(X(p.t), Y(p.e * uk()))); ctx.stroke(); }
+    ctx.setLineDash([]); ctx.lineWidth = 1; ctx.lineCap = 'butt';
+    errGeom.Y = Y; errGeom.series = series;
+  }
+  // analysis window: gray out what's left out
+  if (f.crop) { ctx.fillStyle = 'rgba(128,128,128,.22)'; ctx.fillRect(pad.l, pad.t, X(f.crop[0]) - pad.l, H - pad.t - pad.b); ctx.fillRect(X(f.crop[1]), pad.t, W - pad.r - X(f.crop[1]), H - pad.t - pad.b); }
+  // playhead
+  ctx.strokeStyle = C.text; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X(PH), pad.t); ctx.lineTo(X(PH), H - pad.b); ctx.stroke(); ctx.lineWidth = 1;
+  const tip = $('errTip');
+  if (errHover && errGeom.series && errHover.x > pad.l) {
+    const t = f.t0 + (errHover.x - pad.l) / (W - pad.l - pad.r) * span, rows = [];
+    ctx.strokeStyle = C.muted; ctx.beginPath(); ctx.moveTo(errHover.x, pad.t); ctx.lineTo(errHover.x, H - pad.b); ctx.stroke();
+    for (const s of errGeom.series) { const k = idxAt(s.pts, t); if (k < 0 || t - s.pts[k].t > 3000) continue; rows.push(`<span class="sw dot" style="background:${s.col}"></span> ${esc(s.name)}: <b>${fL(s.pts[k].e, 1)}</b>`); }
+    tip.innerHTML = `${fmtT(t - f.t0)}${rows.length ? '<br>' + rows.join('<br>') : ''}<br><span style="color:var(--muted)">click to jump here</span>`;
+    tip.style.display = 'block'; tip.style.left = Math.min(errHover.x + 12, W - tip.offsetWidth - 4) + 'px'; tip.style.top = '6px';
+  } else tip.style.display = 'none';
+}
+$('errChart').addEventListener('click', (e) => {
+  if (!errGeom) return; const r = $('errChart').getBoundingClientRect(), x = e.clientX - r.left, g = errGeom;
+  setPH(g.f.t0 + Math.max(0, Math.min(1, (x - g.pad.l) / (g.W - g.pad.l - g.pad.r))) * g.span);
+});
+
+function drawPlChart() {
+  const c = $('plChart'); if (!c.clientWidth) return;
+  const [W, H] = sizeCanvas(c), ctx = c.getContext('2d'), C = chartC(); ctx.clearRect(0, 0, W, H);
+  const pad = { l: 50, r: 8, t: 8, b: 22 }, pts = plSamples.slice(-3000), cps = calPoints;
+  const ds = [...pts.map((p) => p.d), ...cps.map((p) => p.d)], rs = [...pts.map((p) => p.rssi), ...cps.map((p) => p.rssi)];
+  if (!ds.length) { emptyChart(ctx, W, H, C, 'Needs calibration points or GPS flight data'); return; }
+  let dmin = Infinity, dmax = 0, rmin = Infinity, rmax = -Infinity;
+  ds.forEach((d) => { dmin = Math.min(dmin, d); dmax = Math.max(dmax, d); }); rs.forEach((r) => { rmin = Math.min(rmin, r); rmax = Math.max(rmax, r); });
+  dmin = Math.max(0.3, dmin * 0.8); dmax = Math.max(dmin * 3, dmax * 1.2); rmin -= 4; rmax += 4;
+  const lx0 = Math.log10(dmin), lx1 = Math.log10(dmax);
+  const X = (d) => pad.l + (Math.log10(d) - lx0) / (lx1 - lx0) * (W - pad.l - pad.r), Y = (r) => H - pad.b - (r - rmin) / (rmax - rmin) * (H - pad.t - pad.b);
+  ctx.strokeStyle = C.grid; ctx.fillStyle = C.muted; ctx.font = '11px -apple-system, sans-serif';
+  for (const d of [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]) if (d >= dmin && d <= dmax) { ctx.beginPath(); ctx.moveTo(X(d), pad.t); ctx.lineTo(X(d), H - pad.b); ctx.stroke(); ctx.fillText(`${d} m`, X(d) - 10, H - 5); }
+  const st = niceStep(rmax - rmin);
+  for (let r = Math.ceil(rmin / st) * st; r <= rmax; r += st) { ctx.beginPath(); ctx.moveTo(pad.l, Y(r)); ctx.lineTo(W - pad.r, Y(r)); ctx.stroke(); ctx.fillText(`${r} dBm`, 2, Y(r) + 4); }
+  ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, H - pad.b); ctx.lineTo(W - pad.r, H - pad.b); ctx.stroke();
+  const aIdx = (id) => Math.max(0, cfg.anchors.findIndex((a) => a.id === id));
+  ctx.globalAlpha = 0.35; for (const p of pts) { ctx.fillStyle = colorOf(anchorColor(aIdx(p.anchor))); ctx.fillRect(X(p.d) - 1.5, Y(p.rssi) - 1.5, 3, 3); } ctx.globalAlpha = 1;
+  cfg.anchors.forEach((a, i) => { ctx.strokeStyle = colorOf(anchorColor(i)); ctx.lineWidth = 2; ctx.beginPath();
+    for (let k = 0; k <= 40; k++) { const d = Math.pow(10, lx0 + (lx1 - lx0) * k / 40), r = a.A - 10 * a.n * Math.log10(d); k ? ctx.lineTo(X(d), Y(r)) : ctx.moveTo(X(d), Y(r)); } ctx.stroke(); });
+  for (const p of cps) { ctx.fillStyle = C.card; ctx.beginPath(); ctx.arc(X(p.d), Y(p.rssi), 6, 0, 7); ctx.fill(); ctx.strokeStyle = colorOf(anchorColor(aIdx(p.anchor))); ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(X(p.d), Y(p.rssi), 5, 0, 7); ctx.stroke(); }
+  ctx.lineWidth = 1;
+  const tip = $('plTip');
+  if (plHover) {
+    let best = null, bd = 144;
+    for (const p of [...cps.map((x) => ({ ...x, cal: true })), ...pts]) { const dd = (X(p.d) - plHover.x) ** 2 + (Y(p.rssi) - plHover.y) ** 2; if (dd < bd) { bd = dd; best = p; } }
+    if (best) { const a = cfg.anchors.find((x) => x.id === best.anchor);
+      tip.innerHTML = `<b>Node ${esc(best.anchor)}</b>${best.cal ? ', calibration point' : ''}<br>${best.d.toFixed(2)} m true, ${best.rssi.toFixed(1)} dBm` + (a ? `<br>model says ${rangeFromRssi(best.rssi, a).toFixed(1)} m` : '');
+      tip.style.display = 'block'; tip.style.left = Math.min(plHover.x + 12, W - tip.offsetWidth - 4) + 'px'; tip.style.top = Math.max(4, plHover.y - 30) + 'px'; }
+    else tip.style.display = 'none';
+  } else tip.style.display = 'none';
+}
+function hoverer(id, set, draw) { const c = $(id); c.addEventListener('mousemove', (e) => { const r = c.getBoundingClientRect(); set({ x: e.clientX - r.left, y: e.clientY - r.top }); draw(); }); c.addEventListener('mouseleave', () => { set(null); draw(); }); }
+
+hoverer('errChart', (v) => { errHover = v; }, drawErrChart);
+hoverer('plChart', (v) => { plHover = v; }, drawPlChart);
+
+// =====================================================================
+// Playback
+// =====================================================================
+function setPH(t) {
+  const f = F(); if (!f) return;
+  PH = Math.max(f.t0, Math.min(f.t1, t));
+  const sc = $('scrub'); sc.max = String(Math.max(1, f.t1 - f.t0)); if (document.activeElement !== sc) sc.value = String(PH - f.t0);
+  $('tLabel').textContent = `${fmtT(PH - f.t0)} / ${fmtT(f.t1 - f.t0)}`;
+  mapDirty = true; cardsDirty = true;
+}
+$('scrub').addEventListener('input', (e) => { const f = F(); if (f) setPH(f.t0 + +e.target.value); });
+function togglePlay() {
+  const f = F(); if (!f) return;
+  if (!playing && PH >= f.t1 - 100) setPH(f.t0);
+  playing = !playing; lastFrame = performance.now(); updateTop();
+}
+$('playBtn').onclick = togglePlay;
+window.addEventListener('keydown', (e) => {
+  if (e.target.closest('input, select, textarea')) return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  if (e.code === 'ArrowRight' && F()) setPH(PH + 5000);
+  if (e.code === 'ArrowLeft' && F()) setPH(PH - 5000);
+});
+let lastFrame = 0, lastMapDraw = 0;
+function frame(ts) {
+  const f = F();
+  if (playing && f) {
+    setPH(PH + (ts - lastFrame) * (cfg.speed || 4));
+    if (PH >= f.t1) { playing = false; updateTop(); }
+  }
+  lastFrame = ts;
+  if (mapDirty && ts - lastMapDraw > 90) { lastMapDraw = ts; try { updateMapLayers(); } catch (e) { logLine('[dash] map: ' + e.message); } }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// =====================================================================
+// Top bar, steps, hints, tabs, console
+// =====================================================================
+let currentTab = 'setup';
+function showTab(t) {
+  currentTab = t;
+  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
+  document.querySelectorAll('.tabpage').forEach((p) => p.classList.toggle('active', p.id === 'tab-' + t));
+  if (t === 'results') { renderStats(); drawPlChart(); }
+  if (t === 'flight') { renderFlightPanel(); renderFlightCards(); drawErrChart(); }
+  if (t === 'more') { conDirty = true; flushConsole(); }
+}
+$('tabs').addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b) showTab(b.dataset.tab); });
+function setHint(text, cls, key) { $('hintBar').innerHTML = (key ? `<span class="k">${esc(key)}</span>` : '') + esc(text); $('hintBar').className = cls || ''; hintHold = Date.now(); }
+let hintHold = 0;
+function updateTop() {
+  const nSet = cfg.anchors.filter(isSet).length, rough = cfg.anchors.filter((a) => isSet(a) && a.src === 'laptop' && a.acc > 10).length, f = F();
+  $('step1').className = 'step ' + (nSet >= 2 ? 'done' : 'now'); $('step1t').textContent = `${nSet} of ${cfg.anchors.length} set${rough ? `, ${rough} rough` : ''}`;
+  $('step2').className = 'step ' + (flights.length ? 'done' : nSet >= 2 ? 'now' : ''); $('step2t').textContent = flights.length ? `${flights.length} loaded` : 'None yet';
+  $('step3').className = 'step ' + (f ? 'now' : ''); $('step3t').textContent = f ? (playing ? `Playing ${fmtT(PH - f.t0)}` : `At ${fmtT(PH - f.t0)}`) : 'Load a flight first';
+  $('readBtn').textContent = dump ? `Stop reading (${dump.lines.length.toLocaleString()} lines)` : 'Read log from drone';
+  $('playBtn').innerHTML = playing ? '&#10073;&#10073;' : '&#9654;';
+  $('timeline').classList.toggle('show', !!f);
+  $('dataInfo').textContent = flights.length ? `${flights.length} flight(s) loaded, ${flights.reduce((s, x) => s + x.rows.length, 0).toLocaleString()} radio positions` : 'No flights loaded.';
+  if (Date.now() - hintHold < 8000) return;   // keep a message the user just triggered on screen for a bit
+  const put = (t, c, k) => { $('hintBar').innerHTML = `<span class="k">${esc(k)}</span>${esc(t)}`; $('hintBar').className = c; };
+  if (nodeJob) return put(`Setting node ${cfg.anchors[nodeJob.i].id}. Keep the laptop${nodeJob.survey ? ' and GPS' : ''} at the node.`, '', 'Now:');
+  if (dump) return put(`Reading the drone's log over USB: ${dump.lines.length.toLocaleString()} lines so far. Keep it plugged in.`, '', 'Now:');
+  const unset = cfg.anchors.find((a) => !isSet(a));
+  if (nSet < 2) return put(`At the field, go to node ${unset.id} and press "Set node". Or press Demo flight to see how it works.`, 'warn', 'Next:');
+  if (!f) return put('After the flight, load the drones\' log files (drag them onto the page), or plug a drone in and press "Read log from drone".', 'warn', 'Next:');
+  if (f.warn.size) return put(`${f.name}: ${[...f.warn][0]} (see the Flight tab)`, 'warn', 'Check:');
+  put(`${f.name}: press play or drag the timeline. Results compares radio, IMU and radio + IMU against GPS.`, 'ok', 'Replay:');
+}
+const conLines = []; let conDirty = false;
+function logLine(s) { conLines.push(`${new Date().toLocaleTimeString()}  ${s}`); if (conLines.length > 500) conLines.splice(0, conLines.length - 500); conDirty = true; }
+function flushConsole() {
+  if (!conDirty || currentTab !== 'more') return; conDirty = false;
+  const el = $('console'), atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  el.textContent = conLines.join('\n'); if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+// =====================================================================
+// Start up + main loop
+// =====================================================================
+function renderAll() { renderSettings(); renderNodeCards(); renderDroneCards(); renderCalSelects(); renderCalTable(); renderLegends(); syncNodeMarkers(); rebuildDroneMarkers(); }
+function afterData() {   // after flights were loaded or recomputed
+  rebuildDroneMarkers(); renderFlightPanel(); renderFlightCards(); renderStats(); renderLegends(); drawErrChart(); drawPlChart(); updateTop();
+  if (F()) setPH(PH); mapDirty = true;
+}
+rebuildGeometry(); renderAll(); setLayer(cfg.layer || 'sat'); setZones(!!cfg.zones);
+$('circlesBtn').classList.toggle('on', !!cfg.circles); renderTrackBtns(); renderTrailBtn();
+if (cfg.anchors.some(isSet)) flyToNodes();
+afterData(); updateConn();
+let tick = 0, lastCardPH = null;
+setInterval(() => {
+  tick++;
+  const safe = (fn) => { try { fn(); } catch (e) { logLine('[dash] ' + e.message); } };
+  if (nodeJob) safe(jobTick);
+  if (dump && dump.lines.length && Date.now() - dump.last > 2500) safe(() => finishDump(false));
+  else if (dump && !dump.lines.length && Date.now() - dump.start > 8000) safe(() => finishDump(false));
+  if (tick % 2 === 0) { safe(updateTop); safe(flushConsole); }
+  if (currentTab === 'flight' && (cardsDirty || lastCardPH !== PH)) { lastCardPH = PH; safe(renderFlightCards); safe(drawErrChart); }
+  if (follow && playing && tick % 8 === 0) safe(() => fitAll(true, 'now'));
+}, 250);
+new ResizeObserver(() => map.invalidateSize()).observe($('mapPane'));
+window.ME74 = { flights, parseLog, addFlight: (p, n) => { const f = addFlight(p, n); afterData(); return f; }, setPH, cfg: () => cfg, solve2, toENU, fromENU, makeRef, demoFlight };
+
+</script>
+</body>
+</html>
