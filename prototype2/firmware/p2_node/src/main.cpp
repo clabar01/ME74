@@ -20,7 +20,8 @@
 // Wiring (same as ME74_combined):
 //   LoRa RFM95:  SCK -> D8   MISO -> D9   MOSI -> D10   CS -> D3   RST -> D2   G0 -> D1
 //   VIN/VCC -> 3V3, GND -> GND
-// LED: short blink on every beacon. Fast blinking = radio not found.
+// LED: short blink on every beacon. Fast blinking = radio not found (the serial port
+// then prints a diagnostic and the board retries the radio every 2 s).
 // =============================================================================
 
 #include <Arduino.h>
@@ -48,6 +49,56 @@ bool ok = false, txBusy = false;
 unsigned long nextBeacon = 0, txStart = 0, ledOffAt = 0;
 uint32_t seq = 0, sent = 0, heard = 0;
 
+const unsigned long RADIO_RETRY_MS = 2000;   // retry a missing radio this often (wiggle wires and watch)
+unsigned long nextRadioTry = 0;
+uint32_t radioTries = 0;
+
+// Read the RFM95 version register (0x42) directly over SPI, without RadioHead
+uint8_t readVersionRaw() {
+  pinMode(RFM95_CS, OUTPUT);
+  digitalWrite(RFM95_CS, HIGH);
+  SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  digitalWrite(RFM95_CS, LOW);
+  SPI.transfer(0x42 & 0x7F);                // bit 7 clear = read
+  uint8_t v = SPI.transfer(0x00);
+  digitalWrite(RFM95_CS, HIGH);
+  SPI.endTransaction();
+  return v;
+}
+
+void printRadioDiagnostic(const char *step, uint8_t ver) {
+  Serial.printf("# LoRa radio not found (attempt %lu): failed at step '%s'\n", (unsigned long)radioTries, step);
+  Serial.printf("#   RFM95 version register 0x42 = 0x%02X -> ", ver);
+  if (ver == 0x00)      Serial.println("no response: power (3V3/GND), CS (D3), SCK (D8) or MOSI (D10) problem");
+  else if (ver == 0xFF) Serial.println("MISO (D9) not connected");
+  else if (ver == 0x12) Serial.println("chip is fine, so the failure is elsewhere (RST D2, G0 D1, or radio setup)");
+  else                  Serial.println("unexpected value: loose or noisy connection, or not an RFM95/SX1276");
+  Serial.printf("#   retrying in %lu s\n", RADIO_RETRY_MS / 1000);
+}
+
+// Reset the radio and set it up. On failure, prints which step failed plus the raw version register.
+bool startRadio() {
+  radioTries++;
+  pinMode(RFM95_RST, OUTPUT);
+  digitalWrite(RFM95_RST, HIGH); delay(10);
+  digitalWrite(RFM95_RST, LOW);  delay(10);
+  digitalWrite(RFM95_RST, HIGH); delay(10);
+  uint8_t ver = readVersionRaw();
+  const char *step = nullptr;
+  if (!rf95.init()) step = "init";
+  else if (rf95.getDeviceVersion() != 0x12) step = "version check";
+  else if (!rf95.setFrequency(LORA_FREQ)) step = "setFrequency";
+  if (step) { printRadioDiagnostic(step, ver); return false; }
+  rf95.setModemConfig(LORA_MODEM);
+  rf95.setTxPower(13, false);
+  rf95.setThisAddress(NODE_NUM);
+  rf95.setHeaderFrom(NODE_NUM);
+  rf95.setModeRx();
+  nextBeacon = millis() + random(0, BEACON_MS);
+  Serial.printf("# ME74 P2 node %c ready (radio address %d)\n", NODE_LETTER, NODE_NUM);
+  return true;
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);                 // never stall when no laptop is listening
@@ -55,23 +106,9 @@ void setup() {
   digitalWrite(LED_PIN, HIGH);
   randomSeed(esp_random());
 
-  SPI.begin(D8, D9, D10, RFM95_CS);
-  pinMode(RFM95_RST, OUTPUT);
-  digitalWrite(RFM95_RST, HIGH); delay(10);
-  digitalWrite(RFM95_RST, LOW);  delay(10);
-  digitalWrite(RFM95_RST, HIGH); delay(10);
-  if (!rf95.init() || rf95.getDeviceVersion() != 0x12 || !rf95.setFrequency(LORA_FREQ)) {
-    Serial.println("# LoRa radio not found, check wiring");
-    return;
-  }
-  rf95.setModemConfig(LORA_MODEM);
-  rf95.setTxPower(13, false);
-  rf95.setThisAddress(NODE_NUM);
-  rf95.setHeaderFrom(NODE_NUM);
-  rf95.setModeRx();
-  ok = true;
-  nextBeacon = millis() + random(0, BEACON_MS);
-  Serial.printf("# ME74 P2 node %c ready (radio address %d)\n", NODE_LETTER, NODE_NUM);
+  SPI.begin(D8, D9, D10, RFM95_CS);         // RadioHead's own SPI.begin() then keeps these pins
+  ok = startRadio();
+  nextRadioTry = millis() + RADIO_RETRY_MS;
 }
 
 void sendBeacon() {
@@ -97,7 +134,15 @@ void printReport(const char *s, int rssi, float snr) {
 }
 
 void loop() {
-  if (!ok) { digitalWrite(LED_PIN, (millis() % 200) < 100 ? LOW : HIGH); return; }
+  if (!ok) {
+    digitalWrite(LED_PIN, (millis() % 200) < 100 ? LOW : HIGH);   // fast blink = no radio
+    if ((int32_t)(millis() - nextRadioTry) >= 0) {
+      ok = startRadio();
+      nextRadioTry = millis() + RADIO_RETRY_MS;
+      if (ok) digitalWrite(LED_PIN, HIGH);
+    }
+    return;
+  }
   if (ledOffAt && (int32_t)(millis() - ledOffAt) >= 0) { digitalWrite(LED_PIN, HIGH); ledOffAt = 0; }
 
   if (txBusy) {                                       // finish a transmission without blocking
