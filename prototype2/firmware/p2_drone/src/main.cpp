@@ -83,8 +83,18 @@ File file;
 bool active = false;
 int fileNum = 0;
 uint32_t bytesWritten = 0, linesDropped = 0;
-unsigned long lastSwap = 0, lastSpaceCheck = 0;
+unsigned long lastSwap = 0;
 bool memoryFull = false;
+
+// Free space is measured by the writer task, never by the main loop while logging:
+// LittleFS.usedBytes() walks the whole filesystem and, on the main loop, stalled the
+// IMU for up to ~280 ms every 5 s. The main loop only reads these two values.
+const size_t STOP_FREE_BYTES = 48 * 1024;     // stop cleanly before the flash fills up
+volatile size_t freeCache = 0;                // free bytes as of the last check
+volatile bool spaceLow = false;               // set by the writer, acted on in service()
+unsigned long lastSpaceCheck = 0;             // writer task only
+
+size_t freeBytes() { return LittleFS.totalBytes() - LittleFS.usedBytes(); }
 
 void writerLoop(void *) {
   for (;;) {
@@ -93,6 +103,12 @@ void writerLoop(void *) {
       file.write((const uint8_t *)pendBuf, pendLen);
       file.flush();                       // a dead battery loses at most ~1 s
       bytesWritten += pendLen;
+      if (millis() - lastSpaceCheck >= 5000) {   // same 5 s cadence as before, now off the main loop
+        lastSpaceCheck = millis();
+        size_t fr = freeBytes();
+        freeCache = fr;
+        if (fr < STOP_FREE_BYTES) spaceLow = true;
+      }
     }
     writerBusy = false;
   }
@@ -144,11 +160,14 @@ int newestFile() {
   return best;
 }
 String pathOf(int n) { char p[16]; snprintf(p, sizeof(p), "/t%03d.csv", n); return String(p); }
-size_t freeBytes() { return LittleFS.totalBytes() - LittleFS.usedBytes(); }
+// For status: while logging, the writer's last measurement (no LittleFS call on the main loop)
+size_t freeForStatus() { return active ? freeCache : freeBytes(); }
 
 bool start() {
   if (active) return true;
-  if (freeBytes() < 64 * 1024) { memoryFull = true; Serial.println("# Memory full: download the logs, then eraseall"); return false; }
+  size_t fr = freeBytes();                    // not logging yet, so the main loop may ask LittleFS
+  if (fr < 64 * 1024) { memoryFull = true; Serial.println("# Memory full: download the logs, then eraseall"); return false; }
+  freeCache = fr; spaceLow = false; lastSpaceCheck = millis();
   fileNum = newestFile() + 1;
   file = LittleFS.open(pathOf(fileNum), "w");
   if (!file) { Serial.println("# Could not create a log file"); return false; }
@@ -178,10 +197,8 @@ void setup() {
 void service() {
   if (!active) return;
   if (fillLen && millis() - lastSwap > 1000) swapBuffers();
-  if (millis() - lastSpaceCheck > 5000) {          // stop cleanly before the flash fills up
-    lastSpaceCheck = millis();
-    if (freeBytes() < 48 * 1024) { append("# memory full, logging stopped\n", 31); stop(); memoryFull = true; }
-  }
+  // Stop cleanly before the flash fills up (the writer task measured the free space)
+  if (spaceLow) { append("# memory full, logging stopped\n", 31); stop(); memoryFull = true; }
 }
 
 }  // namespace logbuf
@@ -774,7 +791,7 @@ void status() {
   Serial.printf("# Drone %s (radio address %d)\n", DRONE_ID, RADIO_ADDR);
   Serial.printf("# Logging: %s", logbuf::active ? "yes" : "no");
   if (logbuf::active) Serial.printf(", t%03d, %lu bytes, %lu lines dropped", logbuf::fileNum, (unsigned long)logbuf::bytesWritten, (unsigned long)logbuf::linesDropped);
-  Serial.printf("\n# Free memory: %lu KB%s\n", (unsigned long)(logbuf::freeBytes() / 1024), logbuf::memoryFull ? " (FULL)" : "");
+  Serial.printf("\n# Free memory: %lu KB%s\n", (unsigned long)(logbuf::freeForStatus() / 1024), logbuf::memoryFull ? " (FULL)" : "");
   Serial.printf("# Radio: %s", radio::ok ? "ok" : "NOT FOUND");
   for (int k = 1; k <= 4; k++) if (radio::recentRssi(k)) Serial.printf(", node %c %d dBm", 'A' + k - 1, radio::recentRssi(k));
   Serial.printf("\n# IMU: %s\n", !imu::ok ? "NOT FOUND" : imu::state == imu::RUNNING ? "running" : "calibrating (keep still)");
