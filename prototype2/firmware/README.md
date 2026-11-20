@@ -47,7 +47,8 @@ which is the start of a live view.
 12052,IMU,D1,t_us,ax,ay,az,gx,gy,gz,mx,my,mz,roll,pitch,heading,dt_ms,overruns   50 per second
 ```
 
-Each battery power-up starts a new file (`t001.csv`, `t002.csv`, ...). It also radios a short report
+Each trial is its own file (`t001.csv`, `t002.csv`, ...), started and stopped with the **B (BOOT) button**
+on the XIAO, since the batteries stay connected and the boards are always on. Powering up never starts a file. It also radios a short report
 twice a second for a node plugged into the laptop. The IMU code is copied unchanged from ME74_combined.
 
 All boards use LoRa at 915 MHz, 500 kHz bandwidth, SF7 (`LORA_MODEM` at the top of each file).
@@ -56,14 +57,22 @@ That's a different setting from ME74_combined, so P2 boards and old boards won't
 ## Flight day
 
 1. **Nodes:** power them, set them in place about 3 ft up, and press "Set node" for each in the dashboard.
-2. **Drones:** set the drone on the ground, connect the payload battery, and **keep it still for about 5 s**
-   while the IMU calibrates. The LED blinks slowly while logging; fast blinking means a problem
-   (no IMU, no radio, or memory full).
+2. **Drones:** set the drone on the ground, **press B once**, take your hand away and **keep it still for about 6 s**
+   while the IMU recalibrates (LED solid on). When the LED switches to a slow blink, it's logging.
 3. Fly the path.
-4. After landing, unplug the payload battery and plug the board into the laptop. Plugged into a computer
-   at power-up, it does **not** start a new file. In the dashboard press **Read log from drone**. It saves
+4. After landing, **press B again**. The file closes and the LED goes back to idle (a short blip every 3 s).
+5. Plug the board into the laptop. In the dashboard press **Read log from drone**. It saves
    a copy to Downloads and loads the flight.
-5. Once the log is safely on the laptop, press **Erase logs on drone** (More tab). Don't erase before that.
+6. Once the log is safely on the laptop, press **Erase logs on drone** (More tab). Don't erase before that.
+
+Repeat 2 to 4 for each trial; every B press pair is one file. Pressing **R** (reset) just reboots the board into idle.
+
+| LED | Meaning |
+|---|---|
+| short blip every 3 s | on and idle, ready for a trial |
+| solid on | trial started, IMU calibrating: keep still |
+| slow blink (1 s) | logging |
+| fast blink | problem: no IMU, no radio, or memory full |
 
 ## USB commands (drone)
 
@@ -73,7 +82,7 @@ That's a different setting from ME74_combined, so P2 boards and old boards won't
 | `list` | files saved on the board |
 | `dump` / `dump 3` | print the newest file (or file 3), then a line `END` |
 | `erase 3` / `eraseall` | delete one file / every file |
-| `start` / `stop` | start a new file / stop logging (for bench tests while plugged in) |
+| `start` / `stop` | same as pressing B: start a trial (new file + IMU recalibration) / stop it |
 | `imu` | toggle a live IMU printout |
 | `0` | recalibrate the IMU (keep it still) |
 
@@ -81,4 +90,4 @@ That's a different setting from ME74_combined, so P2 boards and old boards won't
 
 - `status` on a drone shows both nodes' signal and "IMU: running".
 - `start`, wait 30 s, `stop`, `dump`: the dashboard loads it and shows IMU and signal lines.
-- Unplugged on a battery for a minute, then plugged in: `list` shows a new file of a sensible size.
+- On battery: press B, wait for the slow blink, wait a minute, press B again, then plug in: `list` shows a new file of a sensible size.
