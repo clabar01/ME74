@@ -7,8 +7,9 @@
 //   - signal strength (RSSI) of every node beacon it hears   12034,RSSI,A,D1,-67,9.5
 //   - IMU at 50 Hz (same 15 fields as the old LOG line)      12052,IMU,D1,t_us,ax,...
 //   - GPS at 5 Hz if a GPS is plugged in (with UTC time)     12040,GPS,D1,lat,lon,alt,sats,hdop,hhmmss.ss
-// Each line starts with millis(). Every power-up on battery starts a new file
-// (/t001.csv, /t002.csv, ...). That's exactly the format the dashboard reads.
+// Each line starts with millis(). Each trial is its own file (/t001.csv,
+// /t002.csv, ...), started and stopped with the B button. That's exactly the
+// format the dashboard reads.
 //
 // It also radios a short report twice a second, so a node plugged into the
 // laptop can show the flight live (optional).
@@ -26,20 +27,25 @@
 //   All:         VIN/VCC -> 3V3, GND -> GND
 //
 // ------------------------------------------------------- How to use it ----
-//  1. Put the drone on the ground and power the payload from its battery.
-//     Keep it still for ~5 s: the IMU calibrates, then logging starts.
-//     LED: slow blink = logging, fast blink = problem (no IMU or memory full).
+// The battery stays connected, so the board is always on. Powering up does NOT
+// start logging; the B (BOOT) button starts and stops each trial.
+//  1. Put the drone on the ground and press B once, then take your hand away.
+//     LED solid on = IMU calibrating, keep it still (~6 s).
+//     Then slow blink = logging.
 //  2. Fly.
-//  3. After landing, unplug the battery and plug the board into the laptop.
-//     (Plugged into a computer at power-up, it does NOT start a new file.)
-//     Dashboard: "Read log from drone" (sends "dump"), then "Erase logs on drone".
+//  3. After landing, press B again: the file closes, LED goes back to idle.
+//  4. Plug the board into the laptop. Dashboard: "Read log from drone"
+//     (sends "dump"), then "Erase logs on drone".
+//  LED: short blip every 3 s = on and idle (ready), solid = calibrating,
+//       slow blink = logging, fast blink = problem (no IMU, no radio, memory full).
+//  The R (reset) button reboots the board into idle; it doesn't start a trial.
 //
 // USB commands (115200, one per line):
 //   status        what's running, file, free space
 //   list          the saved files
 //   dump [N]      print file N (default: the newest), then a line "END"
 //   erase N       delete file N        eraseall    delete every file
-//   start / stop  start a new file / stop logging
+//   start / stop  start a trial (new file + IMU recalibration) / stop it, same as B
 //   imu           toggle a live IMU printout       0 = recalibrate the IMU
 // =============================================================================
 
@@ -64,6 +70,7 @@ char DRONE_ID[4];                              // "D1" / "D2", filled in setup()
 
 #define IMUOUT Serial
 #define LED_PIN 21           // XIAO ESP32-S3 user LED, on when LOW
+#define BUTTON_PIN 0         // XIAO ESP32-S3 "B" (BOOT) button, LOW when pressed
 
 // =============================================================================
 // LOG: lines are collected in RAM and written to flash by a separate task on the
@@ -717,6 +724,57 @@ void service() {
 }  // namespace imu
 
 // =============================================================================
+// TRIALS: the B button (or the USB start/stop commands) starts and stops a trial.
+// Starting one opens a new log file and recalibrates the IMU, since the board may
+// have been sitting on all day and the gyro bias drifts with temperature.
+// =============================================================================
+namespace trial {
+
+const int HAND_AWAY_MS = 2000;   // extra wait after a button press so your hand is off the drone
+
+void start(bool fromButton) {
+  if (logbuf::active) return;
+  if (!logbuf::start()) return;
+  imu::start();                              // IMU lines start once it's calibrated
+  if (fromButton) imu::settleUntilMs = millis() + HAND_AWAY_MS + imu::SETTLE_MS;
+  Serial.println("# Trial started: keep the drone still until the LED starts blinking");
+}
+
+void stop() {
+  if (!logbuf::active) return;
+  logbuf::stop();
+  Serial.println("# Trial stopped");
+}
+
+void toggle(bool fromButton) { if (logbuf::active) stop(); else start(fromButton); }
+
+}  // namespace trial
+
+// One action per press, debounced. GPIO0 is only a boot-mode pin while the board
+// is resetting, so reading it while running is fine.
+namespace button {
+
+bool raw = true, stable = true;
+unsigned long changedAt = 0, lastAction = 0;
+
+void setup() { pinMode(BUTTON_PIN, INPUT_PULLUP); }
+
+void service() {
+  bool r = digitalRead(BUTTON_PIN);
+  unsigned long now = millis();
+  if (r != raw) { raw = r; changedAt = now; }
+  if (r != stable && now - changedAt > 30) {
+    stable = r;
+    if (!stable && now - lastAction > 1000) {   // pressed; ignore a second press within 1 s
+      lastAction = now;
+      trial::toggle(true);
+    }
+  }
+}
+
+}  // namespace button
+
+// =============================================================================
 // USB commands
 // =============================================================================
 namespace commands {
@@ -757,7 +815,7 @@ void list() {
 
 void status() {
   Serial.printf("# Drone %s (radio address %d)\n", DRONE_ID, RADIO_ADDR);
-  Serial.printf("# Logging: %s", logbuf::active ? "yes" : "no");
+  Serial.printf("# Logging: %s", logbuf::active ? "yes" : "no (press B to start a trial)");
   if (logbuf::active) Serial.printf(", t%03d, %lu bytes, %lu lines dropped", logbuf::fileNum, (unsigned long)logbuf::bytesWritten, (unsigned long)logbuf::linesDropped);
   Serial.printf("\n# Free memory: %lu KB%s\n", (unsigned long)(logbuf::freeBytes() / 1024), logbuf::memoryFull ? " (FULL)" : "");
   Serial.printf("# Radio: %s", radio::ok ? "ok" : "NOT FOUND");
@@ -773,8 +831,8 @@ void run(String cmd) {
   else if (cmd == "list") list();
   else if (cmd == "dump") dumpFile(0);
   else if (cmd.startsWith("dump ")) dumpFile(cmd.substring(5).toInt());
-  else if (cmd == "start") logbuf::start();
-  else if (cmd == "stop") logbuf::stop();
+  else if (cmd == "start") trial::start(false);
+  else if (cmd == "stop") trial::stop();
   else if (cmd == "eraseall") {
     logbuf::stop();
     File root = LittleFS.open("/");
@@ -810,18 +868,15 @@ void setup() {
   digitalWrite(LED_PIN, LOW);
   snprintf(DRONE_ID, sizeof(DRONE_ID), "D%d", DRONE_NUM);
 
-  // Plugged into a computer at power-up? Then don't start a new log file
-  // (you're probably about to download one).
-  bool computer = false;
-  for (unsigned long t0 = millis(); millis() - t0 < 1500;) { if (Serial) { computer = true; break; } delay(10); }
-
   logbuf::setup();
   radio::setup();
   imu::setup();
   gpsmod::setup();
+  button::setup();
 
-  if (computer) Serial.printf("# ME74 P2 drone %s. Connected to a computer, so not logging. Type status, list, dump, or start.\n", DRONE_ID);
-  else logbuf::start();
+  // The battery is always connected, so powering up never starts a file.
+  // Press B (or send "start") to begin a trial.
+  Serial.printf("# ME74 P2 drone %s ready, not logging. Press B to start a trial, or type status, list, dump, start.\n", DRONE_ID);
 }
 
 void loop() {
@@ -830,10 +885,16 @@ void loop() {
   gpsmod::service();
   logbuf::service();
   commands::service();
+  button::service();
 
-  // LED: slow blink = logging, fast blink = problem, off = idle
+  // LED: fast blink = problem, solid = trial started but IMU still calibrating,
+  // slow blink = logging, short blip every 3 s = on and idle
   bool problem = !imu::ok || !radio::ok || logbuf::memoryFull;
-  unsigned long period = problem ? 200 : 1000;
-  bool on = logbuf::active || problem ? (millis() % period) < period / 2 : false;
+  unsigned long ms = millis();
+  bool on;
+  if (problem) on = (ms % 200) < 100;
+  else if (logbuf::active && imu::state != imu::RUNNING) on = true;
+  else if (logbuf::active) on = (ms % 1000) < 500;
+  else on = (ms % 3000) < 60;
   digitalWrite(LED_PIN, on ? LOW : HIGH);
 }
