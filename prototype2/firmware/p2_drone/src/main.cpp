@@ -257,7 +257,19 @@ namespace radio {
 // 500 kHz / SF7 keeps each packet ~10 ms so lots of beacons fit; range is still well over 100 m.
 #define LORA_MODEM RH_RF95::Bw500Cr45Sf128
 
-RH_RF95 rf95(RFM95_CS, RFM95_INT);
+// The radio is POLLED, not interrupt-driven. RadioHead normally handles DIO0 (D1) in a
+// GPIO interrupt that does SPI transactions; SPI.beginTransaction() takes a mutex with a
+// blocking wait, which asserts ("xQueueSemaphoreTake ... xTaskGetSchedulerState") when the
+// interrupt lands while the log writer task is writing to flash. So the interrupt is
+// detached after init and service() runs RadioHead's handler whenever DIO0 is high
+// (DIO0 = RxDone in receive, TxDone in transmit; it stays high until the handler clears it).
+class PolledRF95 : public RH_RF95 {
+ public:
+  using RH_RF95::RH_RF95;
+  void poll() { handleInterrupt(); }
+};
+
+PolledRF95 rf95(RFM95_CS, RFM95_INT);
 bool ok = false;
 int lastRssi[5] = {0};
 unsigned long lastHeard[5] = {0};
@@ -274,6 +286,8 @@ void setup() {
     Serial.println("# LoRa radio not found, check wiring");
     return;
   }
+  detachInterrupt(digitalPinToInterrupt(RFM95_INT));   // polled from service() instead (see above)
+  pinMode(RFM95_INT, INPUT);
   rf95.setModemConfig(LORA_MODEM);
   rf95.setTxPower(13, false);
   rf95.setThisAddress(RADIO_ADDR);
@@ -297,6 +311,7 @@ void sendReport() {
 
 void service() {
   if (!ok) return;
+  if (digitalRead(RFM95_INT) == HIGH) rf95.poll();   // RX done / TX done: what the interrupt used to do
   if (txBusy) {                                      // finish a transmission without blocking
     if (rf95.mode() != RHGenericDriver::RHModeTx) txBusy = false;
     else if (millis() - txStart > 500) { txBusy = false; rf95.setModeIdle(); }
